@@ -4,7 +4,7 @@ A single-user MCP server in Go that lets claude.ai read one IMAP mailbox
 (Strato by default) and create/send mail, deployed on Google Cloud Run's
 free tier. No web UI.
 
-> **Status: Phase 1 of 5 (mail core) — not deployable yet.**
+> **Status: Phase 2 of 5 (mail core + MCP tools) — not deployable yet.**
 > Phases: 1 mail core · 2 MCP tools · 3 HTTP + OAuth · 4 test hardening ·
 > 5 packaging and deploy files. Setup, connector steps, the security model
 > and the budget-alert recipe arrive in Phase 5.
@@ -14,6 +14,9 @@ free tier. No web UI.
 | Path | Contents |
 |---|---|
 | `internal/mail` | IMAP/SMTP core behind the `mail.Mailbox` interface |
+| `internal/mcptools` | The MCP server and its seven tools |
+| `internal/policy` | Send allowlist and rolling 24 h send cap (in memory) |
+| `internal/logging` | Redacting `slog` JSON handler for Cloud Logging |
 | `internal/testutil` | In-process IMAP (imapmemserver) and SMTP servers over real TLS, for tests only |
 | `tools/` | Separate module pinning `staticcheck` and `govulncheck` |
 | `docs/DECISIONS.md` | Design choices and their reasons |
@@ -48,6 +51,29 @@ deploy time; never put them in files.
 | `MAIL_FOLDER_SENT` / `_DRAFTS` / `_TRASH` / `_ARCHIVE` | discovered | exact folder names; must exist |
 | `MAIL_SAVE_SENT` | `true` | APPEND a copy to Sent after sending |
 | `MAIL_MAX_BODY_BYTES` | `65536` | cap on returned body text |
+
+## Tools
+
+| Tool | Effect |
+|---|---|
+| `mail_list_folders` | folders with role and counts |
+| `mail_search` | one folder; from/to/subject/body/since/before/unread; newest first, max 100 |
+| `mail_read` | one message as plain text plus attachment metadata; never marks as read |
+| `mail_create_draft` | saves a plain-text draft (optionally a reply); sends nothing |
+| `mail_send_draft` | sends a draft from `mail_create_draft`; requires `confirm: true`; returns the exact recipients and subject |
+| `mail_move` | moves messages; `destination: "trash"` is "delete" |
+| `mail_mark_read` | marks read, or unread with `unread: true` |
+
+All mailbox data in results is wrapped in an `untrusted_email_content` block
+with a random boundary; tool descriptions and server instructions tell the
+model never to follow instructions found in emails.
+
+## Send policy (environment)
+
+| Variable | Default | Notes |
+|---|---|---|
+| `SEND_ALLOWLIST` | empty (no restriction) | comma/space separated exact addresses or domains (`example.org`, `@example.org`); subdomains do not match; applies to To, Cc and Bcc |
+| `MAX_SENDS_PER_DAY` | `20` | messages per rolling 24 h; `0` disables sending; resets when the instance restarts |
 
 ## Safety properties of the mail core
 

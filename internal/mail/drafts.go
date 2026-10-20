@@ -231,13 +231,19 @@ func (s *session) applyReply(ref msgRef, nd *normalizedDraft) error {
 	if nd.subject == "" {
 		nd.subject = replySubject(cleanHeader(env.Subject, maxSubjectRunes))
 	}
-	if len(nd.to)+len(nd.cc)+len(nd.bcc) == 0 {
+	if len(nd.to) == 0 {
 		src := env.ReplyTo
 		if len(src) == 0 {
 			src = env.From
 		}
+		used := map[string]bool{}
+		for _, l := range [][]*netmail.Address{nd.cc, nd.bcc} {
+			for _, a := range l {
+				used[strings.ToLower(a.Address)] = true
+			}
+		}
 		for _, a := range src {
-			if addr := a.Addr(); addr != "" && isASCII(addr) {
+			if addr := a.Addr(); addr != "" && isASCII(addr) && !used[strings.ToLower(addr)] {
 				nd.to = append(nd.to, &netmail.Address{Name: cleanHeader(a.Name, 200), Address: addr})
 				break
 			}

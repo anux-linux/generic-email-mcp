@@ -138,6 +138,16 @@ func (cl *Client) Search(ctx context.Context, q SearchQuery) (*SearchResult, err
 	}
 	res := &SearchResult{Folder: folder}
 	err = cl.withSession(ctx, func(s *session) error {
+		if q.Role != RoleNone {
+			roles, _, err := s.roles(cl.cfg.Folders)
+			if err != nil {
+				return err
+			}
+			if folder, err = roles.get(q.Role); err != nil {
+				return err
+			}
+			res.Folder = folder
+		}
 		sel, err := s.examine(folder)
 		if err != nil {
 			return err
@@ -165,6 +175,9 @@ func (cl *Client) Search(ctx context.Context, q SearchQuery) (*SearchResult, err
 func buildCriteria(q SearchQuery) (*imap.SearchCriteria, string, int, error) {
 	invalid := func(why string) (*imap.SearchCriteria, string, int, error) {
 		return nil, "", 0, fmt.Errorf("%w: %s", ErrInvalidInput, why)
+	}
+	if q.Role != RoleNone && q.Folder != "" {
+		return invalid("set folder or role, not both")
 	}
 	folder := q.Folder
 	if folder == "" {

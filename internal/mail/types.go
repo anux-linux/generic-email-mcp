@@ -77,7 +77,8 @@ type Address struct {
 
 // SearchQuery selects messages in one folder. All set criteria must match.
 type SearchQuery struct {
-	Folder  string // empty means INBOX
+	Folder  string // exact folder name; empty means INBOX unless Role is set
+	Role    Role   // alternatively, the folder with this role
 	From    string
 	To      string
 	Subject string
@@ -157,8 +158,9 @@ type DraftInput struct {
 	Subject string
 	Body    string
 	// InReplyTo is an optional message ID (from Search/Read) of the message
-	// being answered. It sets In-Reply-To/References, defaults Subject to
-	// "Re: <original>" and To to the original Reply-To or From.
+	// being answered. It sets In-Reply-To/References and, when empty,
+	// defaults Subject to "Re: <original>" and To to the original Reply-To
+	// or From.
 	InReplyTo string
 }
 

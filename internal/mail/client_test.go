@@ -158,6 +158,8 @@ func TestSearch(t *testing.T) {
 		{"combined", SearchQuery{From: "alice", UnreadOnly: true}, 1, "Invoice April"},
 		{"non-ascii", SearchQuery{Subject: "Grüße"}, 1, "Grüße aus Köln"},
 		{"limit capped", SearchQuery{Limit: 1000}, 5, "Newsletter|Grüße aus Köln|Invoice April|Lunch|Invoice March"},
+		{"by role", SearchQuery{Role: RoleInbox, From: "bob"}, 1, "Lunch"},
+		{"empty role folder", SearchQuery{Role: RoleTrash}, 0, ""},
 	}
 	for _, tc := range cases {
 		r, err := env.client.Search(ctx(t), tc.q)
@@ -185,11 +187,15 @@ func TestSearchErrors(t *testing.T) {
 	env := newEnv(t, nil, true)
 	_, err := env.client.Search(ctx(t), SearchQuery{Folder: "Nope"})
 	mustErrIs(t, err, ErrFolderNotFound)
+	c := env.newClient(func(c *Config) { c.Folders.Archive = "Missing" })
+	_, err = c.Search(ctx(t), SearchQuery{Role: RoleArchive})
+	mustErrIs(t, err, ErrFolderNotFound)
 	for _, q := range []SearchQuery{
 		{Limit: -1},
 		{Subject: "a\r\nb"},
 		{From: strings.Repeat("x", 300)},
 		{Since: baseDate, Before: baseDate},
+		{Folder: "INBOX", Role: RoleInbox},
 	} {
 		if _, err := env.client.Search(ctx(t), q); !errors.Is(err, ErrInvalidInput) {
 			t.Errorf("%+v: %v", q, err)
@@ -589,7 +595,21 @@ func TestReplyThreading(t *testing.T) {
 		t.Fatalf("References = %v", refs)
 	}
 
-	// Explicit subject and recipients win; "Re:" is not doubled.
+	// To defaults even when only Cc/Bcc are given; explicit To wins.
+	d2, err := env.client.CreateDraft(ctx(t), DraftInput{InReplyTo: orig, Bcc: []string{"audit@example.net"}, Body: "x"})
+	if err != nil || len(d2.To) != 1 || d2.To[0].Email != "team@example.net" || len(d2.Bcc) != 1 {
+		t.Fatalf("bcc-only reply: %v %+v", err, d2)
+	}
+	d3, err := env.client.CreateDraft(ctx(t), DraftInput{InReplyTo: orig, To: []string{"other@example.net"}, Subject: "Custom", Body: "x"})
+	if err != nil || len(d3.To) != 1 || d3.To[0].Email != "other@example.net" || d3.Subject != "Custom" {
+		t.Fatalf("explicit reply fields: %v %+v", err, d3)
+	}
+	d4, err := env.client.CreateDraft(ctx(t), DraftInput{InReplyTo: orig, Cc: []string{"team@example.net"}, Body: "x"})
+	if err != nil || len(d4.To) != 0 || len(d4.Cc) != 1 {
+		t.Fatalf("default To must not duplicate Cc: %v %+v", err, d4)
+	}
+
+	// "Re:" is not doubled.
 	if got := replySubject("RE: x"); got != "RE: x" {
 		t.Fatalf("replySubject = %q", got)
 	}

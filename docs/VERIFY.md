@@ -37,12 +37,14 @@ mailbox. Suggested manual checks are read-only.
 | G7 | `imapmemserver` always sends APPENDUID | **resolved** | Source `imapserver/append.go`; fixture can suppress it to test the fallback. |
 | G8 | Behaviour against a real Dovecot server matches the memserver | open | Only testable against a real server (S4/S5). The beta API may change before v2.0.0; the version is pinned. |
 
-## MCP Go SDK (Phase 2)
+## MCP Go SDK v1.8.0
 
-| # | Assumption | Status |
-|---|---|---|
-| M1 | `mcp.NewStreamableHTTPHandler`, `auth.RequireBearerToken`, `auth.ProtectedResourceMetadataHandler` exist with these names in the pinned version | open |
-| M2 | A stateless Streamable HTTP mode exists; otherwise run `--max-instances 1` and tolerate session loss on restart | open |
+| # | Assumption | Status | Evidence |
+|---|---|---|---|
+| M1 | `mcp.NewStreamableHTTPHandler`, `auth.RequireBearerToken`, `auth.ProtectedResourceMetadataHandler` exist with these names | **resolved** | Present in v1.8.0 source (`mcp/streamable.go`, `auth/auth.go`); the metadata handler takes `*oauthex.ProtectedResourceMetadata`. |
+| M2 | A stateless Streamable HTTP mode exists | **resolved** | `StreamableHTTPOptions.Stateless` (no `Mcp-Session-Id`, temporary session per request, GET/DELETE → 405). Phase 3 uses it, so restarts lose nothing. `--max-instances 1` stays for the in-memory send cap (P1). |
+| M3 | A typed tool output would add `structuredContent` that bypasses our wrapper | **resolved** | `toolForErr` in `mcp/server.go`; we return text only, and tests assert `structuredContent` is absent. |
+| M4 | The SDK logs only lifecycle data (session IDs, errors), never tool arguments | **resolved** | All `Logger` calls in `mcp/*.go` reviewed; output is still routed through the redacting handler. |
 
 ## claude.ai client behaviour (Phase 3)
 
@@ -51,3 +53,11 @@ mailbox. Suggested manual checks are read-only.
 | C1 | The OAuth popup handles an HTTP Basic auth prompt on `/authorize` (fallback: single-field HTML form with CSRF protection) | open |
 | C2 | claude.ai uses refresh tokens and handles rotation | open |
 | C3 | Which discovery paths claude.ai requests (`/.well-known/oauth-protected-resource[/mcp]`, `/.well-known/oauth-authorization-server[/mcp]`) | open |
+| C4 | claude.ai asks before calling tools marked `destructiveHint`, and lets the user set `mail_send_draft` to "always ask" | open |
+| C5 | claude.ai passes tool `content` text (not only `structuredContent`) to the model | mitigated: we only send text content |
+
+## Policy
+
+| # | Assumption | Status |
+|---|---|---|
+| P1 | The in-memory daily send cap is acceptable although it resets on instance restart / scale-to-zero | open — owner decision; durable alternative sketched in DECISIONS D19 |
