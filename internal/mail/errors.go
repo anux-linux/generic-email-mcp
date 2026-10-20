@@ -56,6 +56,8 @@ func ErrorKind(err error) string {
 		return "already_sent"
 	case errors.Is(err, ErrPolicy):
 		return "policy"
+	case errors.Is(err, ErrProtected):
+		return "protected"
 	case errors.Is(err, ErrAuth):
 		return "auth"
 	case errors.Is(err, ErrForbidden):

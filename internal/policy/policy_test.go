@@ -23,17 +23,17 @@ func newTest(t *testing.T, cfg Config) (*Memory, *time.Time) {
 func TestAllowlist(t *testing.T) {
 	m, _ := newTest(t, Config{Allowlist: []string{"Bob@Example.org", "partner.example", "@team.example"}, MaxPerDay: 100})
 	for _, ok := range []string{"bob@example.org", "BOB@EXAMPLE.ORG", "anyone@partner.example", "x@team.example"} {
-		if err := m.Admit(t.Context(), []string{ok}); err != nil {
+		if err := m.Admit(t.Context(), []string{ok}, nil); err != nil {
 			t.Errorf("%s rejected: %v", ok, err)
 		}
 	}
 	for _, bad := range []string{"alice@example.org", "a@sub.partner.example", "a@partner.example.evil", "partner.example", "x@notteam.example"} {
-		if err := m.Admit(t.Context(), []string{bad}); !errors.Is(err, ErrNotAllowed) {
+		if err := m.Admit(t.Context(), []string{bad}, nil); !errors.Is(err, ErrNotAllowed) {
 			t.Errorf("%s: err = %v", bad, err)
 		}
 	}
 	// One bad recipient rejects the whole message and names it.
-	err := m.Admit(t.Context(), []string{"bob@example.org", "eve@evil.example"})
+	err := m.Admit(t.Context(), []string{"bob@example.org", "eve@evil.example"}, nil)
 	if !errors.Is(err, ErrNotAllowed) || !strings.Contains(err.Error(), "eve@evil.example") {
 		t.Fatalf("err = %v", err)
 	}
@@ -47,10 +47,10 @@ func TestNoAllowlistAllowsAll(t *testing.T) {
 	if m.Restricted() {
 		t.Fatal("restricted without entries")
 	}
-	if err := m.Admit(t.Context(), []string{"anyone@anywhere.example"}); err != nil {
+	if err := m.Admit(t.Context(), []string{"anyone@anywhere.example"}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.Admit(t.Context(), nil); err == nil {
+	if err := m.Admit(t.Context(), nil, nil); err == nil {
 		t.Fatal("empty recipient list admitted")
 	}
 }
@@ -59,7 +59,7 @@ func TestRollingDailyCap(t *testing.T) {
 	m, now := newTest(t, Config{MaxPerDay: 3})
 	rc := []string{"a@example.org"}
 	for i := range 3 {
-		if err := m.Admit(t.Context(), rc); err != nil {
+		if err := m.Admit(t.Context(), rc, nil); err != nil {
 			t.Fatalf("send %d: %v", i, err)
 		}
 		*now = now.Add(time.Hour)
@@ -67,34 +67,34 @@ func TestRollingDailyCap(t *testing.T) {
 	if m.Remaining() != 0 {
 		t.Fatalf("remaining = %d", m.Remaining())
 	}
-	err := m.Admit(t.Context(), rc)
+	err := m.Admit(t.Context(), rc, nil)
 	if !errors.Is(err, ErrDailyCap) || !strings.Contains(err.Error(), "21h0m0s") {
 		t.Fatalf("err = %v", err)
 	}
 	// Not a calendar day: midnight does not reset the window.
 	*now = now.Add(20*time.Hour + 59*time.Minute) // 23h59m after the first send
-	if err := m.Admit(t.Context(), rc); !errors.Is(err, ErrDailyCap) {
+	if err := m.Admit(t.Context(), rc, nil); !errors.Is(err, ErrDailyCap) {
 		t.Fatalf("window reset early: %v", err)
 	}
 	*now = now.Add(time.Minute) // first send is now 24h old
-	if err := m.Admit(t.Context(), rc); err != nil {
+	if err := m.Admit(t.Context(), rc, nil); err != nil {
 		t.Fatalf("window did not roll: %v", err)
 	}
 }
 
 func TestCapZeroDisablesSending(t *testing.T) {
 	m, _ := newTest(t, Config{MaxPerDay: 0})
-	if err := m.Admit(t.Context(), []string{"a@example.org"}); !errors.Is(err, ErrSendingDisabled) {
+	if err := m.Admit(t.Context(), []string{"a@example.org"}, nil); !errors.Is(err, ErrSendingDisabled) {
 		t.Fatalf("err = %v", err)
 	}
 }
 
 func TestRejectedAllowlistDoesNotConsumeQuota(t *testing.T) {
 	m, _ := newTest(t, Config{Allowlist: []string{"example.org"}, MaxPerDay: 1})
-	if err := m.Admit(t.Context(), []string{"x@evil.example"}); !errors.Is(err, ErrNotAllowed) {
+	if err := m.Admit(t.Context(), []string{"x@evil.example"}, nil); !errors.Is(err, ErrNotAllowed) {
 		t.Fatal(err)
 	}
-	if err := m.Admit(t.Context(), []string{"x@example.org"}); err != nil {
+	if err := m.Admit(t.Context(), []string{"x@example.org"}, nil); err != nil {
 		t.Fatalf("quota consumed by rejected send: %v", err)
 	}
 }
@@ -105,7 +105,7 @@ func TestConcurrentAdmitIsAtomic(t *testing.T) {
 	var wg sync.WaitGroup
 	for range 200 {
 		wg.Go(func() {
-			switch err := m.Admit(t.Context(), []string{"a@example.org"}); {
+			switch err := m.Admit(t.Context(), []string{"a@example.org"}, nil); {
 			case err == nil:
 				ok.Add(1)
 			case errors.Is(err, ErrDailyCap):

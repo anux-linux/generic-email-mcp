@@ -283,11 +283,11 @@ Each entry: the choice, and why. Newest phase last. Open questions live in
   and record are atomic under one mutex (tested with 200 concurrent calls).
   Allowlist rejections do not consume quota; an admitted send whose SMTP
   submission then fails does (conservative).
-- **Known limitation:** the counter is in memory, so it resets when the
-  instance restarts or scales to zero (Cloud Run `--min-instances 0`).
-  `--max-instances 1` at least prevents parallel counters. A durable
-  variant could count our own messages in Sent via IMAP SEARCH; not built
-  (VERIFY P1).
+- **Durable cap (default):** the cap is counted in a ledger folder in the
+  mailbox (`SEND_LEDGER_FOLDER`, default `MCP-Send-Ledger`, created on first
+  send), so restarts and scale-to-zero do not reset it. See D21.
+  `SEND_LEDGER=memory` falls back to an in-process counter (resets on
+  restart).
 
 ### D20. Logging (`internal/logging`)
 - `slog` JSON to stdout with Cloud Logging keys (`severity`, `message`,
@@ -303,3 +303,38 @@ Each entry: the choice, and why. Newest phase last. Open questions live in
   the same handler and filtered to WARN+.
 - Tested on the handler directly and end to end (full tool workflow with
   marker strings, addresses, password, key; none appear in the log).
+
+## Phase 2b — durable send cap
+
+### D21. Send ledger in the mailbox
+- Why the mailbox: it is the only durable storage the service already has.
+  Firestore/GCS would add IAM, a client library and another failure domain
+  for a counter of ≤ 1000 entries per day.
+- `mail.SendLedger` (`Recent`, `Record`) is passed to `SendPolicy.Admit`,
+  bound to the IMAP session of the send, so no extra connection is opened.
+- Admit, under the policy mutex: read entries of the last 24 h (newest
+  `MAX_SENDS_PER_DAY` by UID; `SINCE` with a one-day margin as pre-filter;
+  the exact time comes from the `X-Generic-Email-MCP-Send` header) → refuse
+  at the cap → APPEND a new entry → only then SMTP. The reservation is
+  durable before anything is sent; a failed SMTP attempt still counts.
+- **Fail closed:** if the ledger cannot be read or written, the send is
+  refused (`ErrLedger`, kind `policy`). After writing, the entry is read
+  back; if it is not found (e.g. a server that mishandles
+  `SEARCH HEADER <field> ""`), the send is refused, so a broken ledger is
+  detected on the first send instead of silently disabling the cap.
+- Entries contain only a timestamp and the account address — no recipients,
+  subject or body. Flag `\Seen`.
+- **Tamper resistance against the model:** `mail_move` refuses the ledger
+  folder as source or destination (`ErrProtected`), and nothing can delete
+  or expunge, so the model has no way to lower the count. The owner can
+  clean the folder in any mail client (entries older than 24 h are
+  irrelevant). The ledger folder may not coincide with a role folder.
+- Consequence found while implementing: the ledger EXAMINEs its folder in
+  the middle of SendDraft, so the post-send MOVE of the draft now re-selects
+  Drafts and re-checks UIDVALIDITY first (regression test with colliding
+  UIDs in both folders).
+- With `--max-instances 1` the policy mutex serializes all sends. With more
+  instances two concurrent sends could both pass at cap−1 (documented, not
+  mitigated).
+- Old entries are never removed automatically (no deletion by design);
+  at the default cap that is ≤ 20 tiny messages per day.

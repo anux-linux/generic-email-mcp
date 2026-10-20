@@ -397,7 +397,14 @@ func (cl *Client) SendDraft(ctx context.Context, draftID string) (*SendResult, e
 		if err != nil {
 			return err
 		}
-		if err := cl.policy.Admit(ctx, out.rcpts); err != nil {
+		var ledger SendLedger
+		if cl.cfg.LedgerFolder != "" {
+			if r := roles.roleOf(cl.cfg.LedgerFolder); r != RoleNone {
+				return fmt.Errorf("%w: the send ledger folder must not be the %s folder", ErrPolicy, r)
+			}
+			ledger = &imapLedger{s: s, folder: cl.cfg.LedgerFolder, account: cl.cfg.FromAddress}
+		}
+		if err := cl.policy.Admit(ctx, out.rcpts, ledger); err != nil {
 			return fmt.Errorf("%w: %w", ErrPolicy, err)
 		}
 		if err := cl.sender.Send(ctx, cl.cfg.FromAddress, out.rcpts, out.transmit); err != nil {
@@ -428,6 +435,10 @@ func (cl *Client) SendDraft(ctx context.Context, draftID string) (*SendResult, e
 			res.Warnings = append(res.Warnings, "draft left in Drafts: no Trash folder")
 		} else if !s.caps.Has(imap.CapMove) {
 			res.Warnings = append(res.Warnings, "draft left in Drafts: server lacks MOVE")
+		} else if err := s.openRef(ref, false); err != nil {
+			// The ledger changed the selected folder; re-select and re-check
+			// UIDVALIDITY so the MOVE can only hit the sent draft.
+			res.Warnings = append(res.Warnings, "draft left in Drafts: "+ErrorKind(err))
 		} else if _, err := s.c.Move(imap.UIDSetNum(ref.UID), trash).Wait(); err != nil {
 			res.Warnings = append(res.Warnings, "draft left in Drafts: "+ErrorKind(err))
 		} else {

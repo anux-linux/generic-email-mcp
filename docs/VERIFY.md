@@ -60,4 +60,6 @@ mailbox. Suggested manual checks are read-only.
 
 | # | Assumption | Status |
 |---|---|---|
-| P1 | The in-memory daily send cap is acceptable although it resets on instance restart / scale-to-zero | open — owner decision; durable alternative sketched in DECISIONS D19 |
+| P1 | The daily send cap must survive restarts | **resolved** — durable IMAP ledger (D21); tested across simulated restarts |
+| P2 | Strato allows creating the top-level folder `MCP-Send-Ledger` (Courier-style servers may require an `INBOX.` prefix) | open — on failure sends are refused; set `SEND_LEDGER_FOLDER` (e.g. `INBOX.MCP-Send-Ledger`) |
+| P3 | Strato honours `SEARCH HEADER <field> ""` as "field present" (RFC 3501) | mitigated — if not, the read-back check refuses every send (fail closed) instead of disabling the cap; `SEND_LEDGER=memory` would then be the fallback |

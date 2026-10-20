@@ -21,11 +21,17 @@ type fakePolicy struct {
 	reject error
 }
 
-func (p *fakePolicy) Admit(_ context.Context, rcpts []string) error {
+func (p *fakePolicy) Admit(ctx context.Context, rcpts []string, ledger SendLedger) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.calls = append(p.calls, append([]string(nil), rcpts...))
-	return p.reject
+	if p.reject != nil {
+		return p.reject
+	}
+	if ledger != nil {
+		return ledger.Record(ctx, time.Now())
+	}
+	return nil
 }
 
 func (p *fakePolicy) count() int {

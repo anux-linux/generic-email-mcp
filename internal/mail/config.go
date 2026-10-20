@@ -62,6 +62,10 @@ type Config struct {
 	Folders  FolderOverrides
 	SaveSent bool // APPEND a copy of sent mail to the Sent folder
 
+	// LedgerFolder holds the durable send ledger (see SendLedger). Empty
+	// disables it; the send policy then counts in memory only.
+	LedgerFolder string
+
 	MaxBodyBytes  int   // cap on returned body text
 	MaxFetchBytes int64 // cap on raw bytes fetched per text part
 	DialTimeout   time.Duration
@@ -90,6 +94,8 @@ const (
 	EnvFolderArchive = "MAIL_FOLDER_ARCHIVE"
 	EnvSaveSent      = "MAIL_SAVE_SENT"
 	EnvMaxBodyBytes  = "MAIL_MAX_BODY_BYTES"
+	EnvLedger        = "SEND_LEDGER"        // "imap" (default) or "memory"
+	EnvLedgerFolder  = "SEND_LEDGER_FOLDER" // default DefaultLedgerFolder
 )
 
 // ConfigFromEnv builds a Config from environment variables. DraftKey and
@@ -117,6 +123,16 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 			return Config{}, fmt.Errorf("%s: %w", EnvSaveSent, err)
 		}
 		c.SaveSent = b
+	}
+	switch mode := strings.ToLower(strings.TrimSpace(getenv(EnvLedger))); mode {
+	case "", "imap":
+		c.LedgerFolder = getenv(EnvLedgerFolder)
+		if c.LedgerFolder == "" {
+			c.LedgerFolder = DefaultLedgerFolder
+		}
+	case "memory":
+	default:
+		return Config{}, fmt.Errorf("%s must be imap or memory", EnvLedger)
 	}
 	if v := strings.TrimSpace(getenv(EnvMaxBodyBytes)); v != "" {
 		n, err := strconv.Atoi(v)
@@ -183,6 +199,9 @@ func (c *Config) Validate() error {
 	}
 	if c.MaxBodyBytes < 1024 || c.MaxFetchBytes < int64(c.MaxBodyBytes) {
 		errs = append(errs, errors.New("body limits are invalid"))
+	}
+	if c.LedgerFolder != "" && (!validFolderName(c.LedgerFolder) || strings.EqualFold(c.LedgerFolder, "INBOX")) {
+		errs = append(errs, errors.New("send ledger folder name is invalid"))
 	}
 	if c.TLSConfig != nil && c.TLSConfig.InsecureSkipVerify {
 		errs = append(errs, errors.New("TLS verification cannot be disabled"))

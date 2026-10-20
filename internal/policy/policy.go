@@ -1,5 +1,7 @@
 // Package policy decides whether outgoing mail may be sent: an optional
-// recipient allowlist and a cap on sends per rolling 24 hours.
+// recipient allowlist and a cap on sends per rolling 24 hours. With a
+// durable mail.SendLedger the cap survives restarts; without one it is
+// counted in memory.
 package policy
 
 import (
@@ -10,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/anux-linux/generic-email-mcp/internal/mail"
 )
 
 // Env var names read by FromEnv.
@@ -26,6 +30,9 @@ var (
 	ErrNotAllowed      = errors.New("recipient not permitted by SEND_ALLOWLIST")
 	ErrDailyCap        = errors.New("daily send limit reached (MAX_SENDS_PER_DAY)")
 	ErrSendingDisabled = errors.New("sending is disabled (MAX_SENDS_PER_DAY=0)")
+	// ErrLedger means the durable send record could not be read or written;
+	// the send is refused because the cap cannot be enforced.
+	ErrLedger = errors.New("send ledger unavailable; refusing to send because MAX_SENDS_PER_DAY cannot be enforced")
 )
 
 // Config is the policy configuration.
@@ -56,8 +63,9 @@ func FromEnv(getenv func(string) string) (Config, error) {
 	return c, nil
 }
 
-// Memory is an in-process Policy. State is lost on restart (see
-// docs/DECISIONS.md); it is safe for concurrent use.
+// Memory is the send policy. The allowlist is static; the cap uses the
+// ledger passed to Admit when there is one (durable) and an in-process list
+// otherwise (lost on restart). Safe for concurrent use.
 type Memory struct {
 	addrs   map[string]bool
 	domains map[string]bool
@@ -65,7 +73,7 @@ type Memory struct {
 	now     func() time.Time
 
 	mu    sync.Mutex
-	sends []time.Time // admitted sends within the window, oldest first
+	sends []time.Time // sends within the window, oldest first (ledger snapshot or in-memory record)
 }
 
 // NewMemory validates cfg and returns a policy.
@@ -135,9 +143,10 @@ func (m *Memory) allowed(addr string) bool {
 	return m.addrs[a] || m.domains[a[at+1:]]
 }
 
-// Admit checks the allowlist and, atomically, the rolling cap; on success
-// it records the send. Implements mail.SendPolicy.
-func (m *Memory) Admit(_ context.Context, rcpts []string) error {
+// Admit checks the allowlist and then, holding the lock, the rolling cap;
+// on success it records the send (in the ledger first, if any) before
+// returning. Ledger failures refuse the send. Implements mail.SendPolicy.
+func (m *Memory) Admit(ctx context.Context, rcpts []string, ledger mail.SendLedger) error {
 	if m.max == 0 {
 		return ErrSendingDisabled
 	}
@@ -150,14 +159,38 @@ func (m *Memory) Admit(_ context.Context, rcpts []string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := m.now()
-	cut := 0
-	for cut < len(m.sends) && now.Sub(m.sends[cut]) >= window {
-		cut++
+	if ledger != nil {
+		recent, err := ledger.Recent(ctx, now.Add(-window), m.max)
+		if err != nil {
+			return fmt.Errorf("%w: %w", ErrLedger, err)
+		}
+		m.sends = recent
+	} else {
+		cut := 0
+		for cut < len(m.sends) && now.Sub(m.sends[cut]) >= window {
+			cut++
+		}
+		m.sends = m.sends[cut:]
 	}
-	m.sends = m.sends[cut:]
 	if len(m.sends) >= m.max {
 		retry := m.sends[0].Add(window).Sub(now).Round(time.Minute)
 		return fmt.Errorf("%w: %d sends in the last 24 hours; next send possible in about %s", ErrDailyCap, len(m.sends), retry)
+	}
+	if ledger != nil {
+		if err := ledger.Record(ctx, now); err != nil {
+			return fmt.Errorf("%w: %w", ErrLedger, err)
+		}
+		// Read back: a server whose search misses entries would otherwise
+		// make the cap fail open silently.
+		after, err := ledger.Recent(ctx, now.Add(-window), m.max)
+		if err != nil {
+			return fmt.Errorf("%w: %w", ErrLedger, err)
+		}
+		if want := min(len(m.sends)+1, m.max); len(after) < want {
+			return fmt.Errorf("%w: recorded send not found on read-back", ErrLedger)
+		}
+		m.sends = after
+		return nil
 	}
 	m.sends = append(m.sends, now)
 	return nil

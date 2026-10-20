@@ -121,6 +121,7 @@ var hints = map[string]string{
 	"already_sent":     "This draft has already been sent. Do not send it again.",
 	"delivery_unknown": "Do NOT retry. Tell the user the message may have been sent and ask them to check their Sent folder or with the recipient.",
 	"policy":           "This is a safety limit set by the mailbox owner. Do not try to work around it; tell the user.",
+	"protected":        "The send ledger folder enforces the owner's daily send limit; it cannot be changed through these tools.",
 	"auth":             "The server's mail credentials were rejected; the mailbox owner must fix the configuration.",
 	"timeout":          "The mail server did not respond in time. You may retry once.",
 }

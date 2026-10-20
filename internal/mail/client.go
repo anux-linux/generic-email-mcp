@@ -26,9 +26,10 @@ const (
 // SendPolicy authorizes outgoing mail. Admit is called after the draft has
 // been verified and before any SMTP connection is made; it must atomically
 // check and record the attempt (e.g. against a daily cap) and be safe for
-// concurrent use. A rejection should wrap ErrPolicy.
+// concurrent use. ledger is the durable send record bound to the current
+// IMAP session, or nil when none is configured.
 type SendPolicy interface {
-	Admit(ctx context.Context, recipients []string) error
+	Admit(ctx context.Context, recipients []string, ledger SendLedger) error
 }
 
 // Client implements Mailbox against one IMAP/SMTP account. It holds no
@@ -424,6 +425,11 @@ func (cl *Client) Move(ctx context.Context, ids []string, dest Destination) (*Mo
 	if dest.Folder != "" && !validFolderName(dest.Folder) {
 		return nil, fmt.Errorf("%w: bad folder name", ErrInvalidInput)
 	}
+	for _, folder := range order {
+		if cl.isLedger(folder) {
+			return nil, ErrProtected
+		}
+	}
 	res := &MoveResult{}
 	err = cl.withSession(ctx, func(s *session) error {
 		roles, entries, err := s.roles(cl.cfg.Folders)
@@ -435,6 +441,9 @@ func (cl *Client) Move(ctx context.Context, ids []string, dest Destination) (*Mo
 			return err
 		}
 		res.Folder = target
+		if cl.isLedger(target) {
+			return ErrProtected
+		}
 		if !s.caps.Has(imap.CapMove) {
 			return fmt.Errorf("%w: server lacks MOVE; refusing the COPY+EXPUNGE fallback", ErrUnsupported)
 		}

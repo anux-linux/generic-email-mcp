@@ -15,7 +15,7 @@ free tier. No web UI.
 |---|---|
 | `internal/mail` | IMAP/SMTP core behind the `mail.Mailbox` interface |
 | `internal/mcptools` | The MCP server and its seven tools |
-| `internal/policy` | Send allowlist and rolling 24 h send cap (in memory) |
+| `internal/policy` | Send allowlist and rolling 24 h send cap (durable via a mailbox ledger) |
 | `internal/logging` | Redacting `slog` JSON handler for Cloud Logging |
 | `internal/testutil` | In-process IMAP (imapmemserver) and SMTP servers over real TLS, for tests only |
 | `tools/` | Separate module pinning `staticcheck` and `govulncheck` |
@@ -73,7 +73,9 @@ model never to follow instructions found in emails.
 | Variable | Default | Notes |
 |---|---|---|
 | `SEND_ALLOWLIST` | empty (no restriction) | comma/space separated exact addresses or domains (`example.org`, `@example.org`); subdomains do not match; applies to To, Cc and Bcc |
-| `MAX_SENDS_PER_DAY` | `20` | messages per rolling 24 h; `0` disables sending; resets when the instance restarts |
+| `MAX_SENDS_PER_DAY` | `20` | messages per rolling 24 h; `0` disables sending |
+| `SEND_LEDGER` | `imap` | `imap`: count sends durably in a mailbox folder (survives restarts); `memory`: in-process only |
+| `SEND_LEDGER_FOLDER` | `MCP-Send-Ledger` | created on first send; the tools cannot move mail into or out of it |
 
 ## Safety properties of the mail core
 
