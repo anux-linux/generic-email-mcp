@@ -25,8 +25,9 @@ type SendLedger interface {
 	Record(ctx context.Context, t time.Time) error
 }
 
-// ErrProtected is returned for operations on the send ledger folder.
-var ErrProtected = errors.New("the send ledger folder is protected: it enforces MAX_SENDS_PER_DAY")
+// ErrProtected is returned for moves into or out of the send ledger or auth
+// state folder.
+var ErrProtected = errors.New("this folder is protected: it holds the send ledger (MAX_SENDS_PER_DAY) or the authorization state")
 
 // DefaultLedgerFolder is created on first use.
 const DefaultLedgerFolder = "MCP-Send-Ledger"
@@ -142,7 +143,8 @@ func ledgerEntry(account string, t time.Time) []byte {
 		t.Format(time.RFC1123Z), account, account, ledgerHeader, t.UTC().Format(time.RFC3339))
 }
 
-// isLedger reports whether folder is the configured ledger folder.
-func (cl *Client) isLedger(folder string) bool {
-	return cl.cfg.LedgerFolder != "" && folder == cl.cfg.LedgerFolder
+// isProtected reports whether folder is the send ledger or the auth state
+// folder, which the tools must not move mail into or out of.
+func (cl *Client) isProtected(folder string) bool {
+	return folder != "" && (folder == cl.cfg.LedgerFolder || folder == cl.cfg.StateFolder)
 }

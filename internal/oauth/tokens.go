@@ -31,6 +31,7 @@ type tokenClaims struct {
 	Scope    string `json:"scope"`
 	Epoch    string `json:"epoch"`
 	Family   string `json:"fam"`
+	Gen      int    `json:"gen"`                // refresh tokens: generation in the family
 	Resource string `json:"resource,omitempty"` // refresh tokens: bound resource
 }
 
@@ -42,7 +43,7 @@ func randomID() string {
 	return base64.RawURLEncoding.EncodeToString(b[:])
 }
 
-func (s *Server) sign(typ, audience, family, resource string, ttl time.Duration) (string, time.Time, error) {
+func (s *Server) sign(typ, audience, family string, gen int, resource string, ttl time.Duration) (string, time.Time, error) {
 	now := s.cfg.Now()
 	exp := now.Add(ttl)
 	c := tokenClaims{
@@ -59,6 +60,7 @@ func (s *Server) sign(typ, audience, family, resource string, ttl time.Duration)
 		Scope:    Scope,
 		Epoch:    s.cfg.Epoch,
 		Family:   family,
+		Gen:      gen,
 		Resource: resource,
 	}
 	t := jwt.NewWithClaims(jwt.SigningMethodHS256, c)
@@ -107,9 +109,18 @@ func (s *Server) parse(raw, typ, audience string) (*tokenClaims, error) {
 // VerifyAccessToken implements auth.TokenVerifier for the MCP endpoint.
 // Every failure maps to auth.ErrInvalidToken with a fixed message, so the
 // 401 body never reflects token contents.
-func (s *Server) VerifyAccessToken(_ context.Context, raw string, _ *http.Request) (*auth.TokenInfo, error) {
+func (s *Server) VerifyAccessToken(ctx context.Context, raw string, _ *http.Request) (*auth.TokenInfo, error) {
 	c, err := s.parse(raw, typAccess, s.cfg.Resource)
-	if err != nil || s.store.familyRevoked(c.Family) {
+	if err != nil {
+		return nil, fmt.Errorf("%w", auth.ErrInvalidToken)
+	}
+	revoked, err := s.familyRevoked(ctx, c.Family)
+	if err != nil {
+		// Not ErrInvalidToken: a transient state outage must not make the
+		// client discard its tokens. The SDK answers 500.
+		return nil, err
+	}
+	if revoked {
 		return nil, fmt.Errorf("%w", auth.ErrInvalidToken)
 	}
 	return &auth.TokenInfo{
@@ -128,13 +139,14 @@ type tokenResponse struct {
 	Scope        string `json:"scope"`
 }
 
-// issue mints an access/refresh pair for family.
-func (s *Server) issue(family, resource string) (*tokenResponse, error) {
-	at, _, err := s.sign(typAccess, s.cfg.Resource, family, "", s.cfg.AccessTTL)
+// issue mints an access token and the generation-gen refresh token for
+// family.
+func (s *Server) issue(family string, gen int, resource string) (*tokenResponse, error) {
+	at, _, err := s.sign(typAccess, s.cfg.Resource, family, 0, "", s.cfg.AccessTTL)
 	if err != nil {
 		return nil, err
 	}
-	rt, _, err := s.sign(typRefresh, s.cfg.Issuer, family, resource, s.cfg.RefreshTTL)
+	rt, _, err := s.sign(typRefresh, s.cfg.Issuer, family, gen, resource, s.cfg.RefreshTTL)
 	if err != nil {
 		return nil, err
 	}

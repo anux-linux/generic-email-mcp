@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
@@ -25,9 +26,12 @@ const (
 
 // Server is the authorization server plus the access-token verifier.
 type Server struct {
-	cfg   Config
-	hash  *passwordHash
-	store *store
+	cfg     Config
+	hash    *passwordHash
+	store   *store
+	journal Journal
+	famMu   sync.Mutex // serializes journal updates
+	revoked revocations
 
 	// Global limiters for failed owner logins and failed client
 	// authentication: 5 immediate attempts, then one per minute.
@@ -48,10 +52,16 @@ func New(cfg Config) (*Server, error) {
 		return nil, err
 	}
 	h, _ := parseHash(cfg.PasswordHash)
+	journal := cfg.Journal
+	if journal == nil {
+		journal = NewMemoryJournal(cfg.RefreshTTL)
+	}
 	s := &Server{
 		cfg:            cfg,
 		hash:           h,
 		store:          newStore(),
+		journal:        journal,
+		revoked:        revocations{revoked: map[string]time.Time{}},
 		loginFailures:  rate.NewLimiter(rate.Every(time.Minute), 5),
 		clientFailures: rate.NewLimiter(rate.Every(time.Minute), 5),
 		hashSem:        make(chan struct{}, 1),

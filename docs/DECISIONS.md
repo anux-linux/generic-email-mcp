@@ -412,15 +412,14 @@ Each entry: the choice, and why. Newest phase last. Open questions live in
   with HKDF-SHA256 into independent keys for JWTs, the login form and draft
   IDs, so no key can verify another kind of artifact.
 
-### D25. Authorization state is in memory
-- Pending codes, used refresh-token IDs and revoked families are kept in
-  memory. A restart drops pending codes (the user simply reconnects) and
-  **forgets reuse history**: after a restart an already-rotated refresh token
-  would be accepted once more until it expires. Mitigations: refresh tokens
-  are useless without the client secret (confidential client),
-  `TOKEN_EPOCH` revokes everything, and `--max-instances 1` keeps one state.
-  A durable variant (like the send ledger) is possible; not built
-  (VERIFY A1).
+### D25. Authorization state
+- Pending codes (5 min) stay in memory; a restart drops them and the user
+  simply connects again. A code replayed after a restart is just invalid
+  (the replay window is the code lifetime).
+- **Token families are durable** (default `AUTH_STATE=imap`), see D30.
+  `AUTH_STATE=memory` keeps them in process: reuse detection then only holds
+  within one instance lifetime, and unknown families are adopted after a
+  restart so users are not logged out on every cold start.
 
 ### D26. Owner login
 - `AUTHORIZE_LOGIN=basic` (default): HTTP Basic challenge
@@ -460,3 +459,37 @@ Each entry: the choice, and why. Newest phase last. Open questions live in
   loopback, for local tests). Resource = `BASE_URL/mcp`.
 - `cmd/email-mcp`: serve; `hash-password` (stdin → argon2id); `version`.
   SIGTERM → graceful shutdown within 8 s (Cloud Run allows 10 s).
+
+## Phase 3b — durable refresh-token reuse detection
+
+### D30. Token-family journal in the mailbox
+- Model: a *family* is the chain of refresh tokens from one authorization
+  code. The refresh token carries its generation (`gen`). The journal
+  records `issued gen N` per rotation and `revoked`. A refresh is accepted
+  only if its generation equals the family's newest; then `gen N+1` is
+  recorded before the new pair is issued. An older generation is reuse →
+  `revoked` is recorded and the request fails; so does every later use of
+  the family, and its access tokens are rejected too. This replaces the
+  in-memory set of used token IDs.
+- Storage: `oauth.Journal` (logic stays in `oauth`, tested with an
+  in-memory journal) → `internal/authstate` adapter → `mail.RecordStore`,
+  small header-only messages (`X-MCP-Fam`, `-Kind`, `-Gen`, `-At`) in a
+  dedicated folder (`AUTH_STATE_FOLDER`, default `MCP-Auth-State`, created
+  on first use). No tokens, secrets, codes or addresses other than the
+  account itself are stored. Reads fetch only the newest 3 records of the
+  family (the newest carries the state); `SEARCH HEADER` is a substring
+  match, so values are re-checked for equality.
+- Same protections as the send ledger: `mail_move` refuses the folder as
+  source or destination; it may not be a role folder or the ledger folder.
+- A durable journal **rejects refresh tokens of families it has never
+  seen** (e.g. issued while `AUTH_STATE=memory`): the user reconnects once.
+- Access tokens: revoked families are cached in memory; after a restart
+  the revocations of the last access-token lifetime are loaded from the
+  journal on first use, so a revoked family's access token stays dead.
+- Failure handling: if the journal is unreachable, `/token` answers
+  `503 temporarily_unavailable` (Retry-After 30) and revokes nothing;
+  `/mcp` answers 500 rather than `invalid token`, so the client keeps its
+  tokens. A failed write during reuse detection still revokes in memory.
+- Journal updates are serialized by a mutex; with `--max-instances 1`
+  that makes rotation atomic. Each refresh costs one extra IMAP session
+  (≈ once per hour while connected).

@@ -57,6 +57,8 @@ Secrets (★) come from Secret Manager as environment variables.
 | `AUTHORIZE_USERNAME` | `owner` | Basic-auth user name |
 | `TRUSTED_PROXY_HOPS` | `1` | proxies appending to `X-Forwarded-For` (Cloud Run: 1) |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
+| `AUTH_STATE` | `imap` | `imap`: refresh-token rotation and revocation survive restarts (mailbox folder); `memory`: in process only |
+| `AUTH_STATE_FOLDER` | `MCP-Auth-State` | created on first login; the tools cannot move mail into or out of it |
 
 Create the password hash without putting the password in shell history:
 

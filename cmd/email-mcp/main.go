@@ -24,6 +24,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/anux-linux/generic-email-mcp/internal/authstate"
 	"github.com/anux-linux/generic-email-mcp/internal/config"
 	"github.com/anux-linux/generic-email-mcp/internal/logging"
 	"github.com/anux-linux/generic-email-mcp/internal/mail"
@@ -123,6 +124,9 @@ func buildHandler(cfg *config.Config, logger *slog.Logger) (http.Handler, error)
 	}
 	oc := cfg.OAuth
 	oc.Logger = logger
+	if rs := mb.Records(); rs != nil {
+		oc.Journal = authstate.New(rs) // durable refresh rotation / revocation
+	}
 	if deps.OAuth, err = oauth.New(oc); err != nil {
 		return nil, err
 	}

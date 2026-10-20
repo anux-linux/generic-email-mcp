@@ -55,6 +55,10 @@ type Config struct {
 	RefreshTTL time.Duration
 	CodeTTL    time.Duration
 
+	// Journal stores token families (refresh rotation, reuse detection,
+	// revocation). Nil means an in-memory journal.
+	Journal Journal
+
 	Logger *slog.Logger
 	Now    func() time.Time
 }

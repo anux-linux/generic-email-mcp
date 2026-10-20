@@ -226,6 +226,19 @@ func (s *specialUseSession) Close() error {
 	return s.UserSession.Close()
 }
 
+// Create registers folders created by the client so List reports them.
+func (s *specialUseSession) Create(name string, options *imap.CreateOptions) error {
+	if err := s.UserSession.Create(name, options); err != nil {
+		return err
+	}
+	s.srv.mu.Lock()
+	if _, ok := s.srv.specialUse[name]; !ok {
+		s.srv.specialUse[name] = nil
+	}
+	s.srv.mu.Unlock()
+	return nil
+}
+
 func (s *specialUseSession) Append(mailbox string, r imap.LiteralReader, options *imap.AppendOptions) (*imap.AppendData, error) {
 	data, err := s.UserSession.Append(mailbox, r, options)
 	s.srv.mu.Lock()

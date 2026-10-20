@@ -71,7 +71,8 @@ mailbox. Suggested manual checks are read-only.
 
 | # | Assumption | Status |
 |---|---|---|
-| A1 | In-memory refresh-token reuse detection is acceptable (forgotten on restart, D25) | open — owner decision |
+| A1 | Refresh-token reuse detection must survive restarts | **resolved** — durable journal in the mailbox (D30); tested across simulated restarts against the IMAP test server |
+| A2 | Strato allows creating `MCP-Auth-State` at top level | open — like P2; on failure `/token` answers 503; set `AUTH_STATE_FOLDER` (e.g. `INBOX.MCP-Auth-State`) |
 
 ## Dependencies
 

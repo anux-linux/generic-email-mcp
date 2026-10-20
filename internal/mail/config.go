@@ -65,6 +65,9 @@ type Config struct {
 	// LedgerFolder holds the durable send ledger (see SendLedger). Empty
 	// disables it; the send policy then counts in memory only.
 	LedgerFolder string
+	// StateFolder holds durable OAuth state (see RecordStore). Empty
+	// disables it.
+	StateFolder string
 
 	MaxBodyBytes  int   // cap on returned body text
 	MaxFetchBytes int64 // cap on raw bytes fetched per text part
@@ -96,6 +99,8 @@ const (
 	EnvMaxBodyBytes  = "MAIL_MAX_BODY_BYTES"
 	EnvLedger        = "SEND_LEDGER"        // "imap" (default) or "memory"
 	EnvLedgerFolder  = "SEND_LEDGER_FOLDER" // default DefaultLedgerFolder
+	EnvState         = "AUTH_STATE"         // "imap" (default) or "memory"
+	EnvStateFolder   = "AUTH_STATE_FOLDER"  // default DefaultStateFolder
 )
 
 // ConfigFromEnv builds a Config from environment variables. DraftKey and
@@ -133,6 +138,16 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 	case "memory":
 	default:
 		return Config{}, fmt.Errorf("%s must be imap or memory", EnvLedger)
+	}
+	switch mode := strings.ToLower(strings.TrimSpace(getenv(EnvState))); mode {
+	case "", "imap":
+		c.StateFolder = getenv(EnvStateFolder)
+		if c.StateFolder == "" {
+			c.StateFolder = DefaultStateFolder
+		}
+	case "memory":
+	default:
+		return Config{}, fmt.Errorf("%s must be imap or memory", EnvState)
 	}
 	if v := strings.TrimSpace(getenv(EnvMaxBodyBytes)); v != "" {
 		n, err := strconv.Atoi(v)
@@ -202,6 +217,9 @@ func (c *Config) Validate() error {
 	}
 	if c.LedgerFolder != "" && (!validFolderName(c.LedgerFolder) || strings.EqualFold(c.LedgerFolder, "INBOX")) {
 		errs = append(errs, errors.New("send ledger folder name is invalid"))
+	}
+	if c.StateFolder != "" && (!validFolderName(c.StateFolder) || strings.EqualFold(c.StateFolder, "INBOX") || c.StateFolder == c.LedgerFolder) {
+		errs = append(errs, errors.New("auth state folder name is invalid or equals the send ledger folder"))
 	}
 	if c.TLSConfig != nil && c.TLSConfig.InsecureSkipVerify {
 		errs = append(errs, errors.New("TLS verification cannot be disabled"))

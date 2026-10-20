@@ -69,9 +69,9 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	}
 	switch form.Get("grant_type") {
 	case "authorization_code":
-		s.grantAuthorizationCode(w, form)
+		s.grantAuthorizationCode(w, r, form)
 	case "refresh_token":
-		s.grantRefreshToken(w, form)
+		s.grantRefreshToken(w, r, form)
 	case "":
 		tokenFail(w, http.StatusBadRequest, "invalid_request", "grant_type is required")
 	default:
@@ -138,7 +138,7 @@ func validVerifier(v string) bool {
 	return true
 }
 
-func (s *Server) grantAuthorizationCode(w http.ResponseWriter, form url.Values) {
+func (s *Server) grantAuthorizationCode(w http.ResponseWriter, r *http.Request, form url.Values) {
 	code, verifier, redirectURI := form.Get("code"), form.Get("code_verifier"), form.Get("redirect_uri")
 	if code == "" || redirectURI == "" {
 		tokenFail(w, http.StatusBadRequest, "invalid_request", "code and redirect_uri are required")
@@ -151,8 +151,12 @@ func (s *Server) grantAuthorizationCode(w http.ResponseWriter, form url.Values) 
 	now := s.cfg.Now()
 	family := randomID()
 	// The code is consumed by this attempt whatever the outcome below.
-	entry, ok := s.store.redeemCode(code, family, now, s.cfg.RefreshTTL)
-	if !ok {
+	entry, replayed := s.store.redeemCode(code, family, now)
+	if replayed != "" {
+		s.cfg.Logger.Warn("authorization code replayed", "component", "oauth", "reason", "code_replay")
+		s.revokeFamily(r.Context(), replayed)
+	}
+	if entry == nil {
 		tokenFail(w, http.StatusBadRequest, "invalid_grant", "invalid, expired or already used code")
 		return
 	}
@@ -163,7 +167,11 @@ func (s *Server) grantAuthorizationCode(w http.ResponseWriter, form url.Values) 
 		tokenFail(w, http.StatusBadRequest, "invalid_grant", "code does not match redirect_uri or PKCE verifier")
 		return
 	}
-	resp, err := s.issue(family, entry.resource)
+	if err := s.startFamily(r.Context(), family); err != nil {
+		stateUnavailable(w)
+		return
+	}
+	resp, err := s.issue(family, 0, entry.resource)
 	if err != nil {
 		tokenFail(w, http.StatusInternalServerError, "server_error", "")
 		return
@@ -172,7 +180,7 @@ func (s *Server) grantAuthorizationCode(w http.ResponseWriter, form url.Values) 
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (s *Server) grantRefreshToken(w http.ResponseWriter, form url.Values) {
+func (s *Server) grantRefreshToken(w http.ResponseWriter, r *http.Request, form url.Values) {
 	raw := form.Get("refresh_token")
 	if raw == "" {
 		tokenFail(w, http.StatusBadRequest, "invalid_request", "refresh_token is required")
@@ -187,16 +195,28 @@ func (s *Server) grantRefreshToken(w http.ResponseWriter, form url.Values) {
 		tokenFail(w, http.StatusBadRequest, "invalid_grant", "invalid or expired refresh token")
 		return
 	}
-	if !s.store.useRefresh(c.ID, c.Family, c.ExpiresAt.Time, s.cfg.Now(), s.cfg.RefreshTTL) {
-		s.cfg.Logger.Warn("refresh token reuse or revoked family", "component", "oauth", "reason", "refresh_reuse")
+	switch err := s.rotateFamily(r.Context(), c.Family, c.Gen); {
+	case errors.Is(err, errJournal):
+		stateUnavailable(w)
+		return
+	case err != nil:
+		reason := map[error]string{errFamilyReused: "refresh_reuse", errFamilyRevoked: "family_revoked", errFamilyUnknown: "family_unknown"}[err]
+		s.cfg.Logger.Warn("refresh token rejected", "component", "oauth", "reason", reason)
 		tokenFail(w, http.StatusBadRequest, "invalid_grant", "refresh token was already used or revoked")
 		return
 	}
-	resp, err := s.issue(c.Family, c.Resource)
+	resp, err := s.issue(c.Family, c.Gen+1, c.Resource)
 	if err != nil {
 		tokenFail(w, http.StatusInternalServerError, "server_error", "")
 		return
 	}
 	s.cfg.Logger.Info("tokens issued", "component", "oauth", "grant_type", "refresh_token")
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// stateUnavailable answers when the token-family journal cannot be reached.
+// Nothing is revoked; the client can retry.
+func stateUnavailable(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "30")
+	tokenFail(w, http.StatusServiceUnavailable, "temporarily_unavailable", "authorization state unavailable; retry later")
 }

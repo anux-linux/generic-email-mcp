@@ -425,8 +425,11 @@ func (cl *Client) Move(ctx context.Context, ids []string, dest Destination) (*Mo
 	if dest.Folder != "" && !validFolderName(dest.Folder) {
 		return nil, fmt.Errorf("%w: bad folder name", ErrInvalidInput)
 	}
+	if cl.isProtected(dest.Folder) {
+		return nil, ErrProtected
+	}
 	for _, folder := range order {
-		if cl.isLedger(folder) {
+		if cl.isProtected(folder) {
 			return nil, ErrProtected
 		}
 	}
@@ -441,7 +444,7 @@ func (cl *Client) Move(ctx context.Context, ids []string, dest Destination) (*Mo
 			return err
 		}
 		res.Folder = target
-		if cl.isLedger(target) {
+		if cl.isProtected(target) {
 			return ErrProtected
 		}
 		if !s.caps.Has(imap.CapMove) {
