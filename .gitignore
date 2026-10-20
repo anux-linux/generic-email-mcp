@@ -8,9 +8,10 @@
 *.prof
 coverage.*
 
-# Local secrets must never be committed
+# Local secrets and deployment config must never be committed
 .env
 .env.*
+/deploy.env
 *.pem
 *.key
 

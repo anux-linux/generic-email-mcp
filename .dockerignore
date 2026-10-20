@@ -1,0 +1,11 @@
+# Allowlist: only what the build needs reaches the builder. Keeps .git,
+# deploy.env, docs, scripts and any stray local file out of the context.
+*
+!go.mod
+!go.sum
+!cmd
+!internal
+# Test code and fixtures (the fake mail servers) never enter the image build.
+internal/testutil
+**/*_test.go
+**/testdata

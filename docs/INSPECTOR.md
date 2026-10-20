@@ -102,15 +102,16 @@ To repeat a step by hand, run `KEEP=1 scripts/inspector-local.sh`. Then
 start `email-mcp` with the environment from `<workdir>/mbox/devmailbox.env`
 and use the commands in Part B with `--server-url http://127.0.0.1:8080/mcp`.
 
-## Part B — deployed service (manual, after Phase 5)
+## Part B — deployed service (manual, after the first `scripts/deploy.sh`)
 
 This part uses the **real mailbox**: every step is read-only except B8,
 which sends one message to your own address. It also resolves the open
 Strato items in `docs/VERIFY.md`; write the results there.
 
-**B0. Allow the Inspector callback temporarily.** Redeploy with
-`OAUTH_REDIRECT_URIS=https://claude.ai/api/mcp/auth_callback,http://127.0.0.1:6276/oauth/callback`.
-Make sure your own address is covered by `SEND_ALLOWLIST`.
+**B0. Allow the Inspector callback temporarily.** In `deploy.env`, set
+`OAUTH_REDIRECT_URIS=https://claude.ai/api/mcp/auth_callback,http://127.0.0.1:6276/oauth/callback`
+and make sure `SEND_ALLOWLIST` covers your own address. Then run
+`scripts/deploy.sh`. `S` below is the URL it prints, without `/mcp`.
 
 **Shell setup** (bash; nothing is written outside the temporary directory):
 
@@ -136,11 +137,12 @@ C() { I --stored-auth-only --method tools/call --tool-name "$1" --tool-args-json
 | B9 | `C mail_search '{"folder":"sent","subject":"MCP Inspector test"}'`, then `C mail_move '{"ids":["<that id>"],"destination":"trash"}'` | moved to Trash. Without MOVE support the server refuses it with an error, by design (D8) | S4 |
 | B10 | `C mail_mark_read '{"ids":["<id from B5>"],"unread":true}'` | still unread in webmail | — |
 | B11 | `I --stored-auth-only --method tools/list` again after > 1 h | works without login (refresh rotation); the folder `MCP-Auth-State` exists | A2 |
-| B12 | redeploy with `TOKEN_EPOCH` incremented, then `I --stored-auth-only --method tools/list` | exit 3 | — |
+| B12 | increment `TOKEN_EPOCH` in `deploy.env`, run `scripts/deploy.sh`, then `I --stored-auth-only --method tools/list` | exit 3 | — |
 
 **Cleanup**
 
-1. Redeploy without the loopback redirect URI.
+1. Remove `OAUTH_REDIRECT_URIS` from `deploy.env`, which restores the
+   claude.ai-only default, and run `scripts/deploy.sh`.
 2. If you did not do B12, increment `TOKEN_EPOCH` anyway: it revokes the
    Inspector's tokens. The server has no RFC 7009 revocation endpoint, so
    `--relogin` only deletes the local copy.

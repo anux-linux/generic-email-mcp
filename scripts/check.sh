@@ -31,6 +31,11 @@ go vet ./...
 step "go test -race (shuffled)"
 go test -race -count=1 -shuffle=on ./...
 
+if command -v shellcheck >/dev/null; then
+	step "shellcheck"
+	shellcheck -x -P scripts -S warning scripts/*.sh scripts/lib/*.sh
+fi
+
 step "staticcheck"
 tool staticcheck ./...
 

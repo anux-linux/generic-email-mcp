@@ -62,13 +62,36 @@ column names the items).
 | C8 | claude.ai accepts `application/json` responses from Streamable HTTP | open | Allowed by the spec; if not, set `JSONResponse: false` (one line in `internal/server`). |
 | C9 | claude.ai calls `/token` and `/mcp` server-to-server (no `Sec-Fetch-Site: cross-site`), so cross-origin protection does not block it | open | Symptom would be 403 on `/mcp`. |
 
-## Cloud Run
+## Cloud Run and Google Cloud
 
-| # | Assumption | Status | How to check |
+Checked against Google's documentation on 2026-10-20 (docs.cloud.google.com;
+quotes and URLs are in the Phase 5 research notes, summarized here). Every
+gcloud command line in `scripts/` and the README was also replayed offline
+against gcloud 570.0.0, with no network and no credentials: each failed only
+at "no active account", so all flags and values passed argument parsing.
+
+| # | Assumption | Status | Notes |
 |---|---|---|---|
 | H1 | The front end appends the client IP as the last `X-Forwarded-For` entry (`TRUSTED_PROXY_HOPS=1`) | open | Only affects per-IP rate limiting; the global limit holds regardless. |
-| H2 | SIGTERM grace period is 10 s | open | Shutdown is bounded to 8 s. |
-| H3 | `--max-instances 1` means at most one instance serves at a time | open | May not hold while a new revision rolls out or an instance is replaced. Two instances could then each admit a send at cap−1 (one extra send), or each accept the same refresh token (one reuse not detected). Bounded and short-lived; check the Cloud Run docs in Phase 5 and test with two overlapping revisions. |
+| H2 | SIGTERM grace period is 10 s | open | Shutdown is bounded to 8 s; `scripts/image-check.sh` I10 shows a clean exit 0 on SIGTERM. |
+| H3 | `--max-instances 1` means at most one instance at a time | **resolved: false, accepted** | Docs: instances "can be exceeded for a brief period due to circumstances such as traffic spikes", and "during a deployment, the total number of instances for the service can exceed the maximum instances per revision". The deploy now also sets the service-level `--max=1`, which Google recommends. Remaining effect, briefly: one extra send at cap−1, or one refresh reuse undetected. |
+| H4 | Which URL form `status.url` returns (deterministic `SERVICE-PROJECT_NUMBER.REGION.run.app` or hash-based `….a.run.app`) | open, **mitigated** | Undocumented and reported to vary. On the first deploy, `deploy.sh` picks the deterministic URL from the `run.googleapis.com/urls` annotation (falling back to `status.url`). Later deploys keep the `BASE_URL` already deployed, so it never flips (tested). |
+| H5 | Free tiers: Cloud Run 180k vCPU-s, 360k GiB-s, 2M requests (request-based, per billing account, Tier 1 pricing); Artifact Registry 0.5 GB; Secret Manager 6 active versions and 10k accesses; same-region registry → Cloud Run transfer free | **resolved** (docs) | Active versions = enabled + disabled; destroy old ones after rotating. europe-west1 is Tier 1, europe-west3 Tier 2. |
+| H6 | Budgets only notify | **resolved, with an addition** | Alerts-only budgets don't cap spending. Since 2026-10-13 (GA per Google's release notes) a spend-cap budget can pause Cloud Run; it is set up in the console or the Budget API only. Not automated here. |
+| H7 | gen2 needs ≥ 512 MiB, so 256 MiB means gen1 | **resolved** (docs) | Set explicitly: `--execution-environment=gen1`. |
+| H8 | Secrets exposed as env vars are read at instance start; pinning versions is recommended | **resolved** (docs) | `deploy.sh` pins the newest enabled version by number. A failed secret read prevents the instance from starting (fail closed). |
+| H9 | `--allow-unauthenticated` works in the target project | open | It fails under domain restricted sharing (`iam.allowedPolicyMemberDomains`, enforced by default for organizations created since 2024-05-03). Then set `PUBLIC_ACCESS=no-invoker-iam-check` (GA since 2025-03-28). An org can block that too (`run.managed.requireInvokerIam`). |
+| H10 | Cloud Run accepts the image: linux/amd64, single-platform manifest, nonroot numeric user, port 8080 | **resolved** (docs) / open (first deploy) | Docs: linux/amd64 only. `scripts/image-check.sh` checks platform, user, no shell, one layer on the pinned base, setup and full mode, SIGTERM and logs (12/12 locally). |
+| H11 | The first real deploy works end to end | open | Not executed (Phase 5 rule). After it, run `docs/INSPECTOR.md` Part B. |
+| H12 | The stdout logs need no `roles/logging.logWriter` on the runtime account | resolved (docs, implicit) | Logs on stdout are "picked up automatically". The runtime account has no roles. |
+
+## Deploy scripts
+
+| # | Assumption | Status | Notes |
+|---|---|---|---|
+| K1 | The scripts run on bash 3.2 (macOS default) | **resolved** | All 17 script tests pass with bash 3.2.57 first in `PATH` (the Docker Hub `bash:3.2` binary); a bash-4-only construct fails under it, so the run really used 3.2. |
+| K2 | The BSD userland on macOS (`head -c`, `base64`, `od`, `tr`, `date -u +…`, `seq`) behaves like GNU for the options used | open | Only POSIX options or ones both implement are used; not run on macOS. |
+| K3 | claude.ai's connector dialog: Settings → Connectors → Add custom connector, with OAuth client ID/secret under Advanced settings | open | From the owner's description; labels may differ. |
 
 ## MCP Inspector
 
@@ -88,6 +111,8 @@ column names the items).
 | # | Item | Status |
 |---|---|---|
 | V1 | govulncheck module-level finding GO-2026-5932 (`golang.org/x/crypto/openpgp` unmaintained) | **resolved** — the package is not imported (symbol and package scans clean); no fixed version exists |
+| V2 | CI action tags `actions/checkout@v7.0.1`, `actions/setup-go@v7.0.0` point at the intended code | open, accepted | Tags are mutable (D35); resolved via `git ls-remote` on 2026-10-20. |
+| V3 | Base image digests (`golang:1.27.3-trixie`, `distroless/static-debian13:nonroot`) are current | **resolved** 2026-10-20 | Resolved with `docker buildx imagetools inspect`; refresh periodically for security updates and re-run `scripts/image-check.sh`. |
 
 ## Policy
 

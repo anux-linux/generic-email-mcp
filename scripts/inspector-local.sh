@@ -19,7 +19,10 @@ B=http://127.0.0.1:$PORT
 CALLBACK=http://127.0.0.1:6276/oauth/callback # the Inspector CLI default
 CLIENT_ID=inspector-local-client
 
-for c in go npx curl jq; do command -v "$c" >/dev/null || { echo "missing: $c" >&2; exit 2; }; done
+for c in go node npx curl jq; do command -v "$c" >/dev/null || { echo "missing: $c" >&2; exit 2; }; done
+# The Inspector declares engines.node >=22.19.0.
+node -e 'const [a, b] = process.versions.node.split(".").map(Number); process.exit(a > 22 || (a === 22 && b >= 19) ? 0 : 1)' ||
+	{ echo "Node >= 22.19.0 required, found $(node --version)" >&2; exit 2; }
 W=$(mktemp -d)
 MBOX_PID="" SERVER_PID=""
 cleanup() {

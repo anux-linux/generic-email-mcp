@@ -129,3 +129,20 @@ See `docs/INSPECTOR.md`:
 - Part A is automated in `scripts/inspector-local.sh` (41 checks).
 - Part B covers the deployed service.
 - Part C covers acceptance in claude.ai.
+
+## Phase 5: packaging and deploy files
+
+No test or check here contacts Google Cloud.
+
+| Requirement | Tests |
+|---|---|
+| Multi-stage Dockerfile, CGO off, `-trimpath`, distroless nonroot | `scripts/image-check.sh` I1–I12: version stamped, user 65532:65532, linux/amd64, no shell, exactly one layer on the pinned base, setup mode (`/healthz` 200, `/mcp` 503), full mode (metadata, 401), SIGTERM → exit 0 before the kill timeout, JSON logs without secrets. Runs in CI (`image` job). |
+| Two-step first deploy, then `BASE_URL` | `scripts.TestDeployFirstTimeIsTwoStep`, `…FinishesSetupMode`, `…KeepsExistingBaseURL` (no URL flip on later deploys), `…LaterIsOneStepAndReusesImage`, `…BaseURLOverride` |
+| Cloud Run flags (`--allow-unauthenticated`, min 0, max 1, 1 CPU, 256 Mi, timeout 60) and secrets from Secret Manager | `checkDeployCall` in every deploy test asserts each flag, the image by digest, the four pinned secret versions and the exact environment. Also `scripts.TestDeployWithoutAllUsers`, `…NeedsSecretVersions`. |
+| Deploy safety | `scripts.TestDeployAsksWithoutYes`, `…VerifiesTheResource` (wrong `BASE_URL` detected after deploy), `scripts.TestConfigValidation` (secrets, unknown keys and shell code in `deploy.env` refused, with no external call made) |
+| `gen-secrets.sh` prints once and writes nothing | `scripts.TestGenSecrets`: refuses a non-terminal stdout; on a pseudo-terminal it prints a 32-byte key, a valid client ID and a 32-byte secret, all different on every run |
+| Secret Manager scripts | `scripts.TestSecretsGoThroughStdinOnly` (value only on gcloud's stdin, never in argv; regional replication; per-secret accessor binding), `…ValidateBeforeStoring`, `…StoresPasswordHashNotPassword` |
+| Registry cleanup keeps the last 2 images | `scripts.TestRegistryCleanupPolicy`: immutable-tag repository; policy keep-2 + delete-rest applied with `--no-dry-run` |
+| Runtime account has no project role | `scripts.TestBootstrap` |
+| The gcloud command lines are valid | Recorded calls replayed offline against gcloud 570.0.0 (VERIFY, Cloud Run section) |
+| Shell quality | shellcheck at warning level in `scripts/check.sh` when installed (preinstalled on GitHub's Ubuntu runners) |

@@ -563,3 +563,116 @@ Each entry: the choice, and why. Newest phase last. Open questions live in
   SHA needs their repositories, which are outside this session's access,
   and pushing workflows needs an extra token permission. `check.sh` is
   CI-ready.
+
+## Phase 5 — packaging and deploy files
+
+### D35. CI references actions by exact tag (owner's decision)
+- `actions/checkout@v7.0.1` and `actions/setup-go@v7.0.0`: the newest
+  release tags on 2026-10-20. A commit SHA would be immutable; a tag can be
+  moved by whoever controls the action's repository. The owner chose tags.
+  Exact versions rather than major tags (`@v7`) at least don't move on
+  ordinary releases.
+- Blast radius kept small: `permissions: contents: read`,
+  `persist-credentials: false`, no secrets in any job. Revisit this before
+  CI ever gets cloud credentials.
+- Jobs: `check` (the gate), `image` (`scripts/image-check.sh`),
+  `inspector` (`scripts/inspector-local.sh`), and a weekly `fuzz` pass
+  (60 s per target) that prints any new crasher.
+- Runner image pinned to `ubuntu-24.04`, not `ubuntu-latest`.
+
+### D36. Container image
+- Multi-stage. The build stage is
+  `golang:1.27.3-trixie@sha256:…` on `$BUILDPLATFORM`, cross-compiling to
+  the target, so arm64 hosts need no emulation.
+  - `CGO_ENABLED=0`, `-trimpath`, `-buildvcs=false`; the version comes in
+    via `-ldflags -X main.version`.
+  - `GOFLAGS=-mod=readonly`, `GOTOOLCHAIN=local`; `go mod verify` runs
+    before the build.
+- Runtime: `gcr.io/distroless/static-debian13:nonroot@sha256:…`.
+  - Debian 12 distroless builds were discontinued in September 2026.
+  - No shell or package manager.
+  - `USER 65532:65532`, numeric so platforms can verify it is not root.
+- Both bases are pinned by tag + multi-arch index digest. Update them
+  together and run `scripts/image-check.sh`.
+- `.dockerignore` is an allowlist (`go.mod`, `go.sum`, `cmd`, `internal`).
+  It excludes test files, testdata and `internal/testutil`, so `.git`,
+  `deploy.env`, docs and the fake servers can never enter the build
+  (verified: 35 files in the context).
+- Symbols are not stripped: they make crash traces and binary scanning
+  better and cost about 12 MB compressed in total.
+- Images are built with `--provenance=false --sbom=false`. That gives one
+  single-platform manifest, i.e. one registry version per deploy, which the
+  keep-2 cleanup counts as intended. Unsigned local attestations would add
+  little.
+
+### D37. Deploy flow (`scripts/deploy.sh`)
+- Two-step first deploy, as specified: setup mode (no `BASE_URL`; the
+  service starts and serves only `/healthz`) → read the URL → redeploy with
+  `BASE_URL`. A service left in setup mode is finished the same way.
+- **`BASE_URL` is sticky.** Later deploys reuse the value the service
+  already runs with, read from the service spec. The URL form gcloud
+  reports can vary (VERIFY H4), and a changed issuer would invalidate every
+  token and the connector. The first deploy prefers the deterministic URL
+  from the `run.googleapis.com/urls` annotation.
+- **Declarative:** every deploy sets every flag, `--set-env-vars` (from an
+  allowlist of service keys) and `--set-secrets` in full, so no revision
+  inherits stray settings. The `^|^` delimiter keeps commas in values
+  (`SEND_ALLOWLIST`); `|` is refused in config values.
+- The image is tagged with the git commit (a dirty tree is refused unless
+  `ALLOW_DIRTY=1`, and then gets a timestamped tag) and deployed by digest.
+  An already pushed tag is reused (the repository has immutable tags).
+- Secrets are pinned to the newest enabled version number (Google's
+  recommendation for env-var secrets; H8). A rotation therefore takes effect
+  on the next deploy, and a rollback restores the matching secrets too.
+- `--max-instances=1` (as specified) plus the service-level `--max=1`
+  (H3). `--execution-environment=gen1`, because gen2 needs ≥ 512 MiB.
+  `--cpu-throttling` for request-based billing.
+- `PUBLIC_ACCESS=no-invoker-iam-check` is the GA alternative for
+  organizations that forbid `allUsers` (H9). The app does all
+  authentication in either mode.
+- After deploying it checks `/healthz`, that the metadata names
+  `BASE_URL/mcp`, and the 401 on `/mcp`, then prints the connector
+  settings.
+
+### D38. Configuration and secrets handling in the scripts
+- `deploy.env` (git-ignored) is parsed as `KEY=value`, never sourced. A
+  malicious or mistyped line cannot run code. Unknown keys are errors
+  (typos surface), and the four secret names are refused outright.
+- **Secrets never touch argv, the environment or disk:**
+  - `gen-secrets.sh` refuses unless stdout is a terminal.
+  - `gcp-secrets.sh` reads from a hidden prompt or stdin, validates first
+    (so a bad value never becomes a version), then pipes the value through
+    the `printf` builtin into `gcloud … --data-file=-`.
+  - No here-documents or here-strings are used for secrets: bash 3.2 (macOS)
+    and older 5.x versions back them with temp files.
+  - The owner password is hashed locally (`go run ./cmd/email-mcp
+    hash-password`); only the argon2id hash is stored.
+- Least privilege. The runtime service account has no project role, only
+  `secretAccessor` on each of the four secrets. Secrets use user-managed
+  replication in `REGION`, which keeps them in the EU by default and counts
+  as one billed location.
+- Every mutating gcloud call is printed before it runs, pinned with
+  `--project` and `--quiet`. Each script asks before changing anything
+  unless `YES=1`.
+- Bash 3.2 compatible (no associative arrays, `mapfile` or `${x^^}`), since
+  that is macOS's default.
+
+### D39. Testing the deploy files without a cloud
+- `scripts/scripts_test.go` (17 tests) runs the real scripts against fake
+  `gcloud`, `docker` and `curl` binaries that record every call. It
+  asserts:
+  - the two-step and one-step flows, the sticky `BASE_URL` and the
+    deterministic-URL preference;
+  - every Cloud Run flag, pinned secrets and the env-var encoding;
+  - `--project`/`--quiet` on every call, and confirmation before changes;
+  - config rejection (secrets, unknown keys, shell code, invalid names);
+  - secrets only via stdin, validation before storing, and the hash stored
+    instead of the password;
+  - the cleanup policy content and its enforcement flag;
+  - `gen-secrets.sh` output on a pseudo-terminal, and refusal without one.
+- The recorded command lines were replayed against the real gcloud 570.0.0
+  with no network (`unshare -n`) and an empty config, so the user's account
+  could not be reached. All passed argument parsing.
+- `scripts/image-check.sh` builds the image exactly as deploy does and
+  smoke-tests it (12 checks).
+- shellcheck at warning level runs in the gate when installed, and is clean.
