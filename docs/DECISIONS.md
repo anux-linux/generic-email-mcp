@@ -338,3 +338,125 @@ Each entry: the choice, and why. Newest phase last. Open questions live in
   mitigated).
 - Old entries are never removed automatically (no deletion by design);
   at the default cap that is ≤ 20 tiny messages per day.
+
+## Phase 3 — HTTP and OAuth
+
+### D22. HTTP service (`internal/server`)
+- Routes: `/.well-known/oauth-protected-resource[/mcp]`,
+  `/.well-known/oauth-authorization-server[/mcp]`, `/authorize`, `/token`,
+  `/mcp`, `/healthz`. Everything else 404.
+- `/mcp`: `http.CrossOriginProtection` → `auth.RequireBearerToken`
+  (scope `mail`, `resource_metadata="<BASE_URL>/.well-known/oauth-protected-resource"`)
+  → `mcp.NewStreamableHTTPHandler` with **`Stateless: true`** (no
+  `Mcp-Session-Id`; restarts lose nothing) and **`JSONResponse: true`** (one
+  JSON body per POST, no long-lived SSE streams on a scale-to-zero service).
+- `http.Server`: ReadHeaderTimeout 5 s, ReadTimeout 30 s, WriteTimeout 60 s,
+  IdleTimeout 120 s, MaxHeaderBytes 16 KiB. Bodies: 16 KiB on `/authorize`
+  and `/token`, 1 MiB on `/mcp` (also set in the SDK).
+- Headers on every response: HSTS (https only, 2 years), `nosniff`,
+  `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, CSP
+  `default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`
+  (the login form sets its own), `Cache-Control: no-store` (metadata
+  overrides with `public, max-age=300`). **No `Cross-Origin-Opener-Policy`**:
+  it would sever the popup's opener that claude.ai's OAuth flow relies on.
+  Metadata answers CORS `*` (public; needed by browser-based tools such as
+  MCP Inspector).
+- Rate limits on `/authorize` and `/token`: per client IP 20 burst, 1 per 2 s;
+  global 60 burst, 5/s; bounded map (10 000 IPs). Client IP = the entry
+  `TRUSTED_PROXY_HOPS` (default 1) from the right of `X-Forwarded-For`
+  (left entries are client-controlled), else the TCP peer.
+- Request log line: route name, method, status, duration, bytes — never the
+  path or query (authorization codes), headers or IP. Panics → 500, value not
+  logged.
+- **Setup mode:** without `BASE_URL` the service starts and serves only
+  `/healthz` (503 elsewhere), so the first Cloud Run deployment can succeed
+  before its URL is known. All other settings are still validated then.
+
+### D23. Authorization server (`internal/oauth`)
+- One pre-registered confidential client (`OAUTH_CLIENT_ID`/`_SECRET`), one
+  resource owner. No registration endpoint (claude.ai lets the user enter
+  the client ID/secret). Grants: `authorization_code`, `refresh_token`.
+- RFC 8414 metadata uses a local struct because `oauthex.AuthServerMeta`
+  always serializes `jwks_uri`, which an HS256 server does not have.
+  RFC 9728 metadata uses `oauthex.ProtectedResourceMetadata` with
+  `auth.ProtectedResourceMetadataHandler`. Both are also served with the
+  `/mcp` suffix.
+- `/authorize`: `client_id` and `redirect_uri` must match exactly
+  (allowlist, default only `https://claude.ai/api/mcp/auth_callback`);
+  otherwise a 400 page and **no redirect** (RFC 6749 §4.1.2.1). Other errors
+  redirect with `error`, `state` and `iss` (RFC 9207). PKCE `S256` is
+  mandatory (`plain` refused; challenge must be 43 base64url chars).
+  Repeated parameters are rejected. `resource` (RFC 8707) must name this
+  MCP endpoint; a trailing slash is tolerated (`oauthex.MatchesResource`).
+  Only the scope `mail` is ever granted; other requested scopes are ignored.
+- `/token`: POST, `application/x-www-form-urlencoded`, no repeated
+  parameters, `Cache-Control: no-store`. Codes live 5 minutes, are stored
+  hashed, are consumed by the first redemption attempt (even a failing one),
+  and must match `client_id`, `redirect_uri` and the PKCE verifier
+  (constant-time). **Replaying a code revokes the token family issued from
+  it**, including its access tokens. Refresh requests may not widen scope.
+
+### D24. Tokens
+- HS256 JWTs (the same binary issues and verifies; no third party needs a
+  public key). Access token: `typ: at+jwt` (RFC 9068), `aud` = the MCP
+  resource URL, 1 h. Refresh token: `typ: rt+jwt`, `aud` = the issuer, 30 days
+  from issuance, **rotated on every use**. Both carry `iss`, `sub=owner`,
+  `client_id`, `scope`, `epoch`, `fam` (family) and a random `jti`.
+- Verification pins HS256, checks `typ` (an access token is not a refresh
+  token and vice versa), `iss`, exact `aud`, required `exp`, `iat`/`nbf`
+  with 30 s leeway, strict base64, epoch, client and scope, and the family's
+  revocation. Every failure is the same `invalid token` 401.
+- `TOKEN_EPOCH` (default `1`) is in every token; changing it revokes all
+  tokens at once.
+- Keys: the one `TOKEN_SIGNING_KEY` secret (≥ 32 bytes, base64) is split
+  with HKDF-SHA256 into independent keys for JWTs, the login form and draft
+  IDs, so no key can verify another kind of artifact.
+
+### D25. Authorization state is in memory
+- Pending codes, used refresh-token IDs and revoked families are kept in
+  memory. A restart drops pending codes (the user simply reconnects) and
+  **forgets reuse history**: after a restart an already-rotated refresh token
+  would be accepted once more until it expires. Mitigations: refresh tokens
+  are useless without the client secret (confidential client),
+  `TOKEN_EPOCH` revokes everything, and `--max-instances 1` keeps one state.
+  A durable variant (like the send ledger) is possible; not built
+  (VERIFY A1).
+
+### D26. Owner login
+- `AUTHORIZE_LOGIN=basic` (default): HTTP Basic challenge
+  (`realm="generic-email-mcp", charset="UTF-8"`), username
+  `AUTHORIZE_USERNAME` (default `owner`). Browsers cache Basic credentials
+  for the session, so a later re-authorization in the same browser may not
+  prompt again; redirects can only go to the registered callback.
+- `AUTHORIZE_LOGIN=form`: the fallback asked for in the brief, built now
+  because claude.ai's popup behaviour cannot be verified here (VERIFY C1).
+  One password field. The form carries an HMAC-signed copy of the
+  validated request (10 min) that embeds a random token, which must also
+  come back in a `__Host-` `Secure; HttpOnly; SameSite=Strict` cookie, and
+  cross-origin POSTs are rejected (`Sec-Fetch-Site`/`Origin`). CSP allows
+  only the page's own inline style (hash) and `form-action` to self plus the
+  redirect origins (Chrome applies `form-action` to the post-submit
+  redirect).
+- Password hash (`AUTHORIZE_PASSWORD_HASH`): argon2id PHC
+  (`email-mcp hash-password` → m=64 MiB, t=3, p=1) or bcrypt cost ≥ 10.
+  Parsed parameters are bounded (m ≤ 128 MiB) so a hash cannot exhaust the
+  256 MiB instance; verifications are serialized.
+- Failed logins (and failed client authentications) share a global
+  limiter: 5 attempts, then 1 per minute. Trade-off: an attacker can delay
+  the owner's next re-authorization; issued tokens keep working.
+
+### D27. Client authentication
+- `client_secret_basic` (credentials form-urlencoded inside Basic, RFC 6749
+  §2.3.1) or `client_secret_post`; using both is an error. ID and secret are
+  compared via SHA-256 + `subtle.ConstantTimeCompare` (length-independent).
+  Failures: 401 `invalid_client` (+ `WWW-Authenticate: Basic`), rate limited
+  as above.
+
+### D28. Configuration and process
+- `internal/config` reads every setting; secrets come from Secret Manager as
+  env vars: `MAIL_PASSWORD`, `TOKEN_SIGNING_KEY`, `OAUTH_CLIENT_SECRET`,
+  `AUTHORIZE_PASSWORD_HASH`. Errors name settings, never values (tested).
+- `BASE_URL`: `https://host` without path or trailing slash (http only for
+  loopback, for local tests). Resource = `BASE_URL/mcp`.
+- `cmd/email-mcp`: serve; `hash-password` (stdin → argon2id); `version`.
+  SIGTERM → graceful shutdown within 8 s (Cloud Run allows 10 s).

@@ -4,7 +4,8 @@ A single-user MCP server in Go that lets claude.ai read one IMAP mailbox
 (Strato by default) and create/send mail, deployed on Google Cloud Run's
 free tier. No web UI.
 
-> **Status: Phase 2 of 5 (mail core + MCP tools) — not deployable yet.**
+> **Status: Phase 3 of 5 (mail core, MCP tools, HTTP + OAuth) — runnable
+> locally; deploy files arrive in Phase 5.**
 > Phases: 1 mail core · 2 MCP tools · 3 HTTP + OAuth · 4 test hardening ·
 > 5 packaging and deploy files. Setup, connector steps, the security model
 > and the budget-alert recipe arrive in Phase 5.
@@ -17,6 +18,10 @@ free tier. No web UI.
 | `internal/mcptools` | The MCP server and its seven tools |
 | `internal/policy` | Send allowlist and rolling 24 h send cap (durable via a mailbox ledger) |
 | `internal/logging` | Redacting `slog` JSON handler for Cloud Logging |
+| `internal/oauth` | OAuth 2.1 authorization server (one client, one owner) and token verifier |
+| `internal/server` | HTTP assembly: routes, limits, headers, setup mode |
+| `internal/config` | Loads all settings from the environment |
+| `cmd/email-mcp` | The binary (`serve`, `hash-password`, `version`) |
 | `internal/testutil` | In-process IMAP (imapmemserver) and SMTP servers over real TLS, for tests only |
 | `tools/` | Separate module pinning `staticcheck` and `govulncheck` |
 | `docs/DECISIONS.md` | Design choices and their reasons |
@@ -34,6 +39,31 @@ go tool -modfile=tools/go.mod staticcheck ./...
 go tool -modfile=tools/go.mod govulncheck ./...
 ```
 
+## Service configuration (environment)
+
+Secrets (★) come from Secret Manager as environment variables.
+
+| Variable | Default | Notes |
+|---|---|---|
+| `BASE_URL` | — | `https://<service-host>` without path. Unset = setup mode (only `/healthz`) |
+| `PORT` | `8080` | set by Cloud Run |
+| `OAUTH_CLIENT_ID` | — (required) | 8-128 chars `[A-Za-z0-9._~-]`; enter it in claude.ai |
+| `OAUTH_CLIENT_SECRET` ★ | — (required) | ≥ 32 chars; enter it in claude.ai |
+| `OAUTH_REDIRECT_URIS` | `https://claude.ai/api/mcp/auth_callback` | exact-match allowlist, comma separated |
+| `TOKEN_SIGNING_KEY` ★ | — (required) | base64 of ≥ 32 random bytes; keys for tokens, login form and draft IDs are derived from it |
+| `TOKEN_EPOCH` | `1` | change to revoke every issued token |
+| `AUTHORIZE_PASSWORD_HASH` ★ | — (required) | argon2id from `email-mcp hash-password`, or bcrypt (cost ≥ 10) |
+| `AUTHORIZE_LOGIN` | `basic` | `basic` (browser password prompt) or `form` (HTML form) |
+| `AUTHORIZE_USERNAME` | `owner` | Basic-auth user name |
+| `TRUSTED_PROXY_HOPS` | `1` | proxies appending to `X-Forwarded-For` (Cloud Run: 1) |
+| `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
+
+Create the password hash without putting the password in shell history:
+
+```sh
+read -rs PW && printf '%s\n' "$PW" | go run ./cmd/email-mcp hash-password; unset PW
+```
+
 ## Mail configuration (environment)
 
 Read by `mail.ConfigFromEnv`. Secrets are injected from Secret Manager at
@@ -42,7 +72,7 @@ deploy time; never put them in files.
 | Variable | Default | Notes |
 |---|---|---|
 | `MAIL_USERNAME` | — (required) | Strato: the full address |
-| `MAIL_PASSWORD` | — (required) | secret |
+| `MAIL_PASSWORD` ★ | — (required) | secret |
 | `MAIL_IMAP_ADDR` | `imap.strato.de:993` | implicit TLS only |
 | `MAIL_SMTP_ADDR` | `smtp.strato.de:465` | implicit TLS only |
 | `MAIL_FROM` | `MAIL_USERNAME` | bare address |

@@ -46,15 +46,38 @@ mailbox. Suggested manual checks are read-only.
 | M3 | A typed tool output would add `structuredContent` that bypasses our wrapper | **resolved** | `toolForErr` in `mcp/server.go`; we return text only, and tests assert `structuredContent` is absent. |
 | M4 | The SDK logs only lifecycle data (session IDs, errors), never tool arguments | **resolved** | All `Logger` calls in `mcp/*.go` reviewed; output is still routed through the redacting handler. |
 
-## claude.ai client behaviour (Phase 3)
+## claude.ai client behaviour
+
+| # | Assumption | Status | How to check / fallback |
+|---|---|---|---|
+| C1 | The OAuth popup shows the browser's HTTP Basic dialog for `/authorize` | open | Connect once. If no dialog appears or the flow stalls, set `AUTHORIZE_LOGIN=form` (single-field HTML form with CSRF protection, D26) and redeploy. Also check the Claude mobile apps if used there. |
+| C2 | claude.ai uses the refresh token and stores the rotated one | open | Leave the connector idle > 1 h, then use a tool: must work without re-login. Logs show `grant_type: refresh_token`. |
+| C3 | Discovery paths claude.ai requests | mitigated | Both plain and `/mcp`-suffixed variants of both well-known documents are served. |
+| C4 | claude.ai asks before calling tools marked `destructiveHint`, and lets the user set `mail_send_draft` to "always ask" | open | |
+| C5 | claude.ai passes tool `content` text to the model | mitigated: only text content is sent |
+| C6 | claude.ai sends `resource` = the configured server URL (RFC 8707) | mitigated | Optional; exact or trailing-slash match accepted; anything else is `invalid_target`. |
+| C7 | claude.ai's token endpoint authentication method | mitigated | Both `client_secret_basic` and `client_secret_post` work. |
+| C8 | claude.ai accepts `application/json` responses from Streamable HTTP | open | Allowed by the spec; if not, set `JSONResponse: false` (one line in `internal/server`). |
+| C9 | claude.ai calls `/token` and `/mcp` server-to-server (no `Sec-Fetch-Site: cross-site`), so cross-origin protection does not block it | open | Symptom would be 403 on `/mcp`. |
+
+## Cloud Run
+
+| # | Assumption | Status | How to check |
+|---|---|---|---|
+| H1 | The front end appends the client IP as the last `X-Forwarded-For` entry (`TRUSTED_PROXY_HOPS=1`) | open | Only affects per-IP rate limiting; the global limit holds regardless. |
+| H2 | SIGTERM grace period is 10 s | open | Shutdown is bounded to 8 s. |
+
+## Authorization state
 
 | # | Assumption | Status |
 |---|---|---|
-| C1 | The OAuth popup handles an HTTP Basic auth prompt on `/authorize` (fallback: single-field HTML form with CSRF protection) | open |
-| C2 | claude.ai uses refresh tokens and handles rotation | open |
-| C3 | Which discovery paths claude.ai requests (`/.well-known/oauth-protected-resource[/mcp]`, `/.well-known/oauth-authorization-server[/mcp]`) | open |
-| C4 | claude.ai asks before calling tools marked `destructiveHint`, and lets the user set `mail_send_draft` to "always ask" | open |
-| C5 | claude.ai passes tool `content` text (not only `structuredContent`) to the model | mitigated: we only send text content |
+| A1 | In-memory refresh-token reuse detection is acceptable (forgotten on restart, D25) | open — owner decision |
+
+## Dependencies
+
+| # | Item | Status |
+|---|---|---|
+| V1 | govulncheck module-level finding GO-2026-5932 (`golang.org/x/crypto/openpgp` unmaintained) | **resolved** — the package is not imported (symbol and package scans clean); no fixed version exists |
 
 ## Policy
 
