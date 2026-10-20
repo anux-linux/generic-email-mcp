@@ -78,6 +78,9 @@ func maxLen(n int) func(*jsonschema.Schema) {
 
 func strList(minItems, maxItems, itemLen int) func(*jsonschema.Schema) {
 	return func(s *jsonschema.Schema) {
+		// Inference yields ["null","array"] for slices; null is never a
+		// valid list here, and single types are more portable.
+		s.Type, s.Types = "array", nil
 		if minItems > 0 {
 			s.MinItems = jsonschema.Ptr(minItems)
 		}

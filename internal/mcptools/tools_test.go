@@ -172,6 +172,14 @@ func TestToolList(t *testing.T) {
 		if tool.Annotations == nil {
 			t.Errorf("%s: no annotations", tool.Name)
 		}
+		// One JSON type per property: portable to single-type dialects
+		// (MCP Inspector --strict) and no null lists.
+		props, _ := sch["properties"].(map[string]any)
+		for name, p := range props {
+			if typ, _ := p.(map[string]any)["type"].(string); typ == "" {
+				t.Errorf("%s.%s: type is not a single type: %v", tool.Name, name, p)
+			}
+		}
 	}
 	for _, tool := range res.Tools {
 		if tool.Name == "mail_send_draft" {

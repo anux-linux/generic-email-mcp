@@ -7,7 +7,9 @@ Status: **open** (unconfirmed), **resolved** (confirmed, with how), or
 ## Strato (needs a real account — not testable here)
 
 None of these can be confirmed without credentials; tests never touch a real
-mailbox. Suggested manual checks are read-only.
+mailbox. Suggested manual checks are read-only. `docs/INSPECTOR.md` Part B
+checks most of them in one session against the deployed service (its last
+column names the items).
 
 | # | Assumption | Status | How to check / impact |
 |---|---|---|---|
@@ -42,7 +44,7 @@ mailbox. Suggested manual checks are read-only.
 | # | Assumption | Status | Evidence |
 |---|---|---|---|
 | M1 | `mcp.NewStreamableHTTPHandler`, `auth.RequireBearerToken`, `auth.ProtectedResourceMetadataHandler` exist with these names | **resolved** | Present in v1.8.0 source (`mcp/streamable.go`, `auth/auth.go`); the metadata handler takes `*oauthex.ProtectedResourceMetadata`. |
-| M2 | A stateless Streamable HTTP mode exists | **resolved** | `StreamableHTTPOptions.Stateless` (no `Mcp-Session-Id`, temporary session per request, GET/DELETE → 405). Phase 3 uses it, so restarts lose nothing. `--max-instances 1` stays for the in-memory send cap (P1). |
+| M2 | A stateless Streamable HTTP mode exists | **resolved** | `StreamableHTTPOptions.Stateless` (no `Mcp-Session-Id`, temporary session per request, GET/DELETE → 405). Phase 3 uses it, so restarts lose nothing. `--max-instances 1` stays: the send-policy and token-journal mutexes serialize only within one process (H3). |
 | M3 | A typed tool output would add `structuredContent` that bypasses our wrapper | **resolved** | `toolForErr` in `mcp/server.go`; we return text only, and tests assert `structuredContent` is absent. |
 | M4 | The SDK logs only lifecycle data (session IDs, errors), never tool arguments | **resolved** | All `Logger` calls in `mcp/*.go` reviewed; output is still routed through the redacting handler. |
 
@@ -66,6 +68,13 @@ mailbox. Suggested manual checks are read-only.
 |---|---|---|---|
 | H1 | The front end appends the client IP as the last `X-Forwarded-For` entry (`TRUSTED_PROXY_HOPS=1`) | open | Only affects per-IP rate limiting; the global limit holds regardless. |
 | H2 | SIGTERM grace period is 10 s | open | Shutdown is bounded to 8 s. |
+| H3 | `--max-instances 1` means at most one instance serves at a time | open | May not hold while a new revision rolls out or an instance is replaced. Two instances could then each admit a send at cap−1 (one extra send), or each accept the same refresh token (one reuse not detected). Bounded and short-lived; check the Cloud Run docs in Phase 5 and test with two overlapping revisions. |
+
+## MCP Inspector
+
+| # | Assumption | Status |
+|---|---|---|
+| I1 | A generic, spec-following MCP client completes this server's OAuth flow (discovery, static client with secret, PKCE S256, RFC 8707 `resource`, RFC 9207 `iss`, rotation) and uses all tools | **resolved** — MCP Inspector 2.11.0 CLI, `scripts/inspector-local.sh`, 41/41 checks (2026-10-20). Says nothing about claude.ai itself (C1–C9). |
 
 ## Authorization state
 

@@ -4,8 +4,8 @@ A single-user MCP server in Go that lets claude.ai read one IMAP mailbox
 (Strato by default) and create/send mail, deployed on Google Cloud Run's
 free tier. No web UI.
 
-> **Status: Phase 3 of 5 (mail core, MCP tools, HTTP + OAuth) — runnable
-> locally; deploy files arrive in Phase 5.**
+> **Status: Phase 4 of 5 (mail core, MCP tools, HTTP + OAuth, test
+> hardening) — runnable locally; deploy files arrive in Phase 5.**
 > Phases: 1 mail core · 2 MCP tools · 3 HTTP + OAuth · 4 test hardening ·
 > 5 packaging and deploy files. Setup, connector steps, the security model
 > and the budget-alert recipe arrive in Phase 5.
@@ -22,22 +22,27 @@ free tier. No web UI.
 | `internal/server` | HTTP assembly: routes, limits, headers, setup mode |
 | `internal/config` | Loads all settings from the environment |
 | `cmd/email-mcp` | The binary (`serve`, `hash-password`, `version`) |
-| `internal/testutil` | In-process IMAP (imapmemserver) and SMTP servers over real TLS, for tests only |
+| `internal/testutil` | In-process IMAP (imapmemserver) and SMTP servers over real TLS, for tests only; `TestDevMailbox` serves them for manual runs |
 | `tools/` | Separate module pinning `staticcheck` and `govulncheck` |
+| `scripts/check.sh` | The quality gate (format, modules, vet, race tests, staticcheck, govulncheck, optional fuzzing) |
+| `scripts/inspector-local.sh` | MCP Inspector checklist against a fake mailbox, automated |
 | `docs/DECISIONS.md` | Design choices and their reasons |
 | `docs/VERIFY.md` | Assumptions not yet confirmed (open/resolved) |
+| `docs/TESTING.md` | How to test; every Phase 4 requirement mapped to its tests |
+| `docs/INSPECTOR.md` | MCP Inspector checklist: local (automated), deployed, claude.ai |
 
 ## Checks
 
 Requires Go 1.27.3 (`GOTOOLCHAIN=auto` downloads it). No test touches a real
-mailbox or the network beyond `127.0.0.1`.
+mailbox or the network beyond `127.0.0.1` (govulncheck queries vuln.go.dev).
 
 ```sh
-go test -race ./...
-go vet ./...
-go tool -modfile=tools/go.mod staticcheck ./...
-go tool -modfile=tools/go.mod govulncheck ./...
+scripts/check.sh                # gofmt, mod verify/tidy, vet, go test -race -shuffle=on, staticcheck, govulncheck
+FUZZTIME=30s scripts/check.sh   # plus 30 s per fuzz target
+scripts/inspector-local.sh      # real binary + MCP Inspector 2.11.0 CLI against a fake mailbox (Linux, needs npx/jq)
 ```
+
+See `docs/TESTING.md` for what each test proves.
 
 ## Service configuration (environment)
 

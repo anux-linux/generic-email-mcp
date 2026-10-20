@@ -493,3 +493,73 @@ Each entry: the choice, and why. Newest phase last. Open questions live in
 - Journal updates are serialized by a mutex; with `--max-instances 1`
   that makes rotation atomic. Each refresh costs one extra IMAP session
   (≈ once per hour while connected).
+
+## Phase 4 — tests and verification
+
+### D31. Fuzzing every parser of untrusted input
+- Native Go fuzzing (no extra dependency), 13 targets: message/draft IDs,
+  the IMAP command guard, HTML → text, hidden-CSS parsing, text and header
+  cleaning, MIME text decoding, outgoing-message preparation, the
+  untrusted-content wrapper, the log scrubber, access-token verification,
+  the token and authorize endpoints, password-hash parsing.
+- Each target asserts a security property, not just "no panic" (e.g. no
+  forbidden command reaches the wire; a `display:none` marker never leaks;
+  no Bcc is transmitted; every accepted ID has exactly one spelling;
+  `/authorize` never redirects off the registered callback).
+- `go test` replays the seeds and committed crashers; `FUZZTIME=… scripts/check.sh`
+  fuzzes every target.
+- Findings, all fixed:
+  - **ID canonicalization:** IDs with non-zero trailing base64 bits, or with
+    embedded CR/LF (Go's decoder skips them even in strict mode), were
+    accepted as aliases. Now `RawURLEncoding.Strict()` plus an explicit
+    alphabet check.
+  - **Log scrubber:** `local@host` without a dot in the domain was not
+    redacted. The pattern now matches any `local@domain` token.
+  - Two harness-only findings (an oracle mismatch on invalid UTF-8, a
+    request-construction panic in the harness) were fixed in the tests.
+
+### D32. Concurrency tests, mutation-checked
+- `mcptools.TestConcurrentToolCalls` runs the real client against the IMAP
+  and SMTP test servers from parallel MCP sessions under `-race`:
+  - mixed reads, flags, moves and drafts;
+  - one draft sent from every session at once is delivered once;
+  - a burst with every draft sent twice delivers exactly the remaining cap,
+    each draft once.
+  Removing the policy mutex or the per-draft guard makes it fail, so it
+  proves both.
+- OAuth single-use under races: 16 parallel redemptions of one code, or
+  refreshes of one token, give exactly one success, and the losers revoke
+  the winner's tokens. That is the intended RFC 9700 behaviour: concurrent
+  reuse cannot be told apart from replay. It holds even if a loser revokes
+  before the winner records its family, because `revoked` outranks any
+  `issued` event regardless of order (`familyState`).
+
+### D33. MCP Inspector: CLI against a fake mailbox; no CORS on `/token`
+- Pinned `@modelcontextprotocol/inspector@2.11.0`, CLI mode. It does the
+  full OAuth flow (discovery, static client with secret, PKCE, RFC 8707
+  `resource`) from Node, so it needs no CORS.
+- The web UI would need CORS on `/token`. That is not added: the only real
+  client, claude.ai, calls `/token` server to server, and a confidential
+  client's secret does not belong in a browser.
+- `scripts/inspector-local.sh` automates the checklist against a fake
+  mailbox: `TestDevMailbox` (the test servers, gated by `DEVMAILBOX=1`) plus
+  the real binary, which trusts the dev CA via `SSL_CERT_FILE`. No
+  production code or configuration knob was added for this, and the fake
+  server lives in a `_test.go` file, so it can never be in a build.
+- The loopback callback `http://127.0.0.1:6276/oauth/callback` is added to
+  `OAUTH_REDIRECT_URIS` only while testing a deployment.
+- Finding: Go `[]string` fields were inferred as `type: ["null","array"]`.
+  `--strict` flags that as non-portable, and `null` is never a valid list
+  here. List properties now have the single type `array` (asserted in
+  `TestToolList`).
+
+### D34. One quality gate: `scripts/check.sh`
+- In order: gofmt, `go mod verify` + `go mod tidy -diff` (main and `tools/`
+  modules), `go vet`, `go test -race -count=1 -shuffle=on`, staticcheck,
+  govulncheck. Optional fuzz pass.
+- It found a stale `tools/go.sum` on its first run (tidied).
+- Shuffled order catches tests that depend on each other's state.
+- No CI workflow is committed yet. Pinning third-party actions by commit
+  SHA needs their repositories, which are outside this session's access,
+  and pushing workflows needs an extra token permission. `check.sh` is
+  CI-ready.
