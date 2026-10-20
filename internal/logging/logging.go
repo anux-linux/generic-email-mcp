@@ -138,7 +138,8 @@ var scrubbers = []struct {
 	{regexp.MustCompile(`(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]+`), "$1 [credentials]"},
 	{regexp.MustCompile(`(?i)\b(password|passwd|pwd|secret|client_secret|token|access_token|refresh_token|code|code_verifier|authorization)(["']?\s*[:=]\s*["']?)[^\s"'&,;]+`), "$1$2[redacted]"},
 	{regexp.MustCompile(`eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]*`), "[jwt]"},
-	{regexp.MustCompile(`[A-Za-z0-9!#$%&'*+/=?^_{|}~.-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+`), "[email]"},
+	// Any local@domain token, dotted or not (bob@localhost too).
+	{regexp.MustCompile(`[A-Za-z0-9!#$%&'*+/=?^_{|}~.-]+@[A-Za-z0-9-][A-Za-z0-9.-]*`), "[email]"},
 	{regexp.MustCompile(`[A-Za-z0-9_+/=.-]{32,}`), "[opaque]"},
 }
 

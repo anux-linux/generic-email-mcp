@@ -1,0 +1,2 @@
+go test fuzz v1
+string("m1.A000A0.1.1")

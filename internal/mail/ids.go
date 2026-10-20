@@ -31,7 +31,9 @@ const (
 	draftMACLabel = "generic-email-mcp/draft/v1"
 )
 
-var b64 = base64.RawURLEncoding
+// b64 decodes strictly: non-zero trailing bits are rejected, so every ID
+// has exactly one valid spelling (found by FuzzParseID).
+var b64 = base64.RawURLEncoding.Strict()
 
 type msgRef struct {
 	Folder      string
@@ -73,6 +75,13 @@ func parseID(id string) (msgRef, []byte, error) {
 	}
 	if id == "" || len(id) > maxIDLen {
 		return bad("empty or too long")
+	}
+	// Go's base64 decoder skips \r and \n even in strict mode; allow only
+	// the ID alphabet so every ID has one spelling.
+	for i := 0; i < len(id); i++ {
+		if c := id[i]; !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_' || c == '.') {
+			return bad("unexpected character")
+		}
 	}
 	parts := strings.Split(id, ".")
 	var wantParts int
