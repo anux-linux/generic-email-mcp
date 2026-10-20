@@ -1,0 +1,20 @@
+# Build output
+/bin/
+/email-mcp
+*.test
+
+# Coverage and profiles
+*.out
+*.prof
+coverage.*
+
+# Local secrets must never be committed
+.env
+.env.*
+*.pem
+*.key
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store

@@ -1,0 +1,53 @@
+# Verification log
+
+Every assumption that could not be confirmed from source code or tests.
+Status: **open** (unconfirmed), **resolved** (confirmed, with how), or
+**mitigated** (still unconfirmed, but the code handles both outcomes).
+
+## Strato (needs a real account — not testable here)
+
+None of these can be confirmed without credentials; tests never touch a real
+mailbox. Suggested manual checks are read-only.
+
+| # | Assumption | Status | How to check / impact |
+|---|---|---|---|
+| S1 | IMAP is `imap.strato.de:993`, implicit TLS | open | `openssl s_client -connect imap.strato.de:993 -quiet` then `a CAPABILITY`, `a LOGOUT`. Override: `MAIL_IMAP_ADDR`. |
+| S2 | SMTP is `smtp.strato.de:465`, implicit TLS, offers `AUTH PLAIN` | open | `openssl s_client -connect smtp.strato.de:465 -quiet`, `EHLO [127.0.0.1]`, read the `AUTH` line, `QUIT`. Override: `MAIL_SMTP_ADDR`. |
+| S3 | Login name is the full e-mail address (IMAP and SMTP) | open | First real login. |
+| S4 | Server capabilities include `MOVE`, `UIDPLUS`, `SPECIAL-USE`, `LIST-EXTENDED`, `LIST-STATUS` | mitigated | Without MOVE, move/delete is refused (by design, D8). Without UIDPLUS the draft UID is found via Message-ID search (tested). Without SPECIAL-USE/LIST-STATUS: name heuristics and STATUS fallback (tested). |
+| S5 | Folder names / SPECIAL-USE flags (likely `Sent`/`Drafts`/`Trash` or German names, possibly `INBOX.`-prefixed) | mitigated | Both layouts are handled; set `MAIL_FOLDER_SENT/DRAFTS/TRASH/ARCHIVE` if discovery picks wrong. Check with `a LIST "" "*" RETURN (SPECIAL-USE)` after login. |
+| S6 | Strato does **not** auto-save submitted mail to Sent | open | If it does, set `MAIL_SAVE_SENT=false` to avoid duplicates. |
+| S7 | Strato stores APPENDed drafts byte-exact (the draft HMAC covers the bytes) | mitigated | CRLF/LF and trailing newlines are normalized. If Strato rewrites headers, sending fails safe with `ErrDraftInvalid`, never sends a modified draft. |
+| S8 | SMTP accepts EHLO `[127.0.0.1]` from authenticated clients | open | Override with `MAIL_SMTP_HELO`. |
+| S9 | Strato SMTP sending limits (per-hour/day, recipients per message) | open | Unknown; keep `MAX_SENDS_PER_DAY` (Phase 2, default 20) below it. Recipients per message are capped at 50 here. |
+| S10 | Non-ASCII search works (`SEARCH CHARSET UTF-8`) | open | go-imap adds `CHARSET UTF-8` automatically for non-ASCII terms on IMAP4rev1 (source, resolved); server support unknown. |
+| S11 | Strato requires `From` = authenticated address | mitigated | The code always uses the account address (`MAIL_FROM` defaults to the username). |
+| S12 | Connection limits / rate limits on IMAP logins (one login per tool call) | open | Watch for `[LIMIT]`/`[UNAVAILABLE]` errors under bursty use. |
+
+## go-imap v2.0.0-beta.8 (pre-release)
+
+| # | Assumption | Status | Evidence |
+|---|---|---|---|
+| G1 | `Client.Move` falls back to COPY + STORE `\Deleted` + EXPUNGE without MOVE | **resolved** | Source `imapclient/move.go`; guarded (D8) and covered by `TestGuardBlocksLibraryMoveFallback`. |
+| G2 | `Select(…, ReadOnly: true)` sends `EXAMINE` | **resolved** | Source `imapclient/select.go`; wire recording in `TestReadPlainNeverMarksSeen`. |
+| G3 | The client resets socket deadlines per command | **resolved** | Source `imapclient/client.go` (`setReadTimeout`); hence context-driven close (D3). |
+| G4 | BODYSTRUCTURE params are RFC 2047-decoded but not RFC 2231 | **resolved** | Source `readBodyFldParam`; local RFC 2231 decoding tested in `TestAttachmentMetadata`. |
+| G5 | `imapmemserver` cannot store SPECIAL-USE attributes | **resolved** | Field is never assigned in source; test fixture wraps `List`. |
+| G6 | `imapmemserver` sets `\Seen` on non-PEEK fetch even under EXAMINE | **resolved** | Source `imapmemserver/mailbox.go`; makes the no-seen test meaningful. |
+| G7 | `imapmemserver` always sends APPENDUID | **resolved** | Source `imapserver/append.go`; fixture can suppress it to test the fallback. |
+| G8 | Behaviour against a real Dovecot server matches the memserver | open | Only testable against a real server (S4/S5). The beta API may change before v2.0.0; the version is pinned. |
+
+## MCP Go SDK (Phase 2)
+
+| # | Assumption | Status |
+|---|---|---|
+| M1 | `mcp.NewStreamableHTTPHandler`, `auth.RequireBearerToken`, `auth.ProtectedResourceMetadataHandler` exist with these names in the pinned version | open |
+| M2 | A stateless Streamable HTTP mode exists; otherwise run `--max-instances 1` and tolerate session loss on restart | open |
+
+## claude.ai client behaviour (Phase 3)
+
+| # | Assumption | Status |
+|---|---|---|
+| C1 | The OAuth popup handles an HTTP Basic auth prompt on `/authorize` (fallback: single-field HTML form with CSRF protection) | open |
+| C2 | claude.ai uses refresh tokens and handles rotation | open |
+| C3 | Which discovery paths claude.ai requests (`/.well-known/oauth-protected-resource[/mcp]`, `/.well-known/oauth-authorization-server[/mcp]`) | open |
