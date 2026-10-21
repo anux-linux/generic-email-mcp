@@ -5,12 +5,13 @@ A single-user MCP server in Go that lets claude.ai read one IMAP mailbox
 free tier. There is no web UI: one mailbox, one owner, one OAuth client
 (claude.ai).
 
-> **Status: all five phases built** (mail core, MCP tools, HTTP + OAuth, test
-> hardening, packaging), plus keyless automatic deploys from GitHub. The
-> first real deploy (2026-10-21) brought the service up and showed that
-> Cloud Run reserves `/healthz`. The health endpoint is now `/health`
-> (VERIFY H11, H13). The first automatic deploy and the checks in
-> `docs/INSPECTOR.md` Parts B and C are still open (`docs/VERIFY.md`).
+> **Status: deployed and verified** (2026-10-21). All five phases are built
+> (mail core, MCP tools, HTTP + OAuth, test hardening, packaging), plus
+> keyless automatic deploys from GitHub. The service runs on Cloud Run and
+> is connected to claude.ai. The Strato and claude.ai items in
+> `docs/VERIFY.md` were checked against the live service. Still open: the
+> first automatic deploy from GitHub (W1, W2, W5, W11) and a few items
+> marked open or mitigated there.
 
 - [Setup](#setup)
 - [Automatic deploys from GitHub](#automatic-deploys-from-github)
