@@ -875,3 +875,22 @@ where they are silent, against the gcloud 590.0.0 source and the
   without the buildx-only flags. `scripts/image-check.sh` and CI still use
   docker.
 
+### D47. A second mailbox is a second deployment (owner's decision)
+- Chosen over one server serving several mailboxes. With a separate
+  deployment, each mailbox has its own service, runtime account, secrets,
+  OAuth client, allowlist, send cap, ledger and claude.ai connector. A
+  token for one cannot touch the other. Prompt injection in one mailbox
+  cannot cause a send from the other, and neither runtime account can read
+  the other's secrets.
+- No code change is needed. The scripts derive the service, image path and
+  secret names from `SERVICE`, and the account from `RUNTIME_SA_NAME`,
+  and take any configuration file through `CONFIG`. `/deploy*.env` is
+  git-ignored. That keeps the owner's data out of git, and `deploy.sh`
+  needs it because it refuses an untracked file in the tree.
+  `TestSecondMailboxIsSeparate` checks the separation, and
+  `TestDeployConfigsAreIgnored` checks the ignore rule.
+- The cost is two more active secret versions beyond Secret Manager's free
+  6, and a second connector to manage. Automatic deploys cover only the
+  first mailbox. Extending `deploy.yml` would need a second environment,
+  `DEPLOY_ENV` and provider condition.
+

@@ -98,7 +98,7 @@ at "no active account", so all flags and values passed argument parsing.
 
 | # | Assumption | Status | Notes |
 |---|---|---|---|
-| K1 | The scripts run on bash 3.2 (macOS default) | **resolved** | All 30 script tests pass with bash 3.2.57 first in `PATH` (the Docker Hub `bash:3.2` binary); a bash-4-only construct fails under it, so the run really used 3.2. |
+| K1 | The scripts run on bash 3.2 (macOS default) | **resolved** | All 32 script tests pass with bash 3.2.57 first in `PATH` (the Docker Hub `bash:3.2` binary); a bash-4-only construct fails under it, so the run really used 3.2. |
 | K2 | The BSD userland on macOS (`head -c`, `base64`, `od`, `tr`, `date -u +…`, `seq`) behaves like GNU for the options used | open | Only POSIX options or ones both implement are used; not run on macOS. |
 | K3 | claude.ai's connector dialog: Settings → Connectors → Add custom connector, with OAuth client ID/secret under Advanced settings | open | From the owner's description; labels may differ. |
 

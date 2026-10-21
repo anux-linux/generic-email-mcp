@@ -448,6 +448,50 @@ func TestDeployWithPodman(t *testing.T) {
 	checkDeployCall(t, deploys[0], fakeURL)
 }
 
+// A second mailbox is a second deployment: with its own SERVICE and
+// RUNTIME_SA_NAME, every resource the deploy touches is its own.
+func TestSecondMailboxIsSeparate(t *testing.T) {
+	cfg := strings.Replace(baseConfig, "MAIL_USERNAME=me@example.org", "MAIL_USERNAME=zweit@example.org", 1) +
+		"SERVICE=email-mcp-zweit\nRUNTIME_SA_NAME=email-mcp-zweit-run\n"
+	s := newSandbox(t, cfg)
+	if out, err := s.run("", "deploy.sh"); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	deploys := s.calls("gcloud", "run", "deploy", "email-mcp-zweit")
+	if len(deploys) != 2 {
+		t.Fatalf("%d deploy calls for email-mcp-zweit, want 2", len(deploys))
+	}
+	want := strings.NewReplacer("email-mcp-", "email-mcp-zweit-").Replace(wantSecrets)
+	for _, f := range []string{"--service-account=email-mcp-zweit-run@test-project-1.iam.gserviceaccount.com",
+		"--image=europe-west1-docker.pkg.dev/test-project-1/email-mcp/email-mcp-zweit@" + fakeDigest,
+		"--set-secrets=" + want} {
+		if !slices.Contains(deploys[1], f) {
+			t.Errorf("deploy call lacks %s:\n%q", f, deploys[1])
+		}
+	}
+	raw, _ := flag(deploys[1], "set-env-vars")
+	if env := envVars(t, raw); env["MAIL_USERNAME"] != "zweit@example.org" {
+		t.Errorf("env = %v", env)
+	}
+	for _, c := range s.calls("gcloud", "secrets", "versions", "list") {
+		if !strings.HasPrefix(c[slices.Index(c, "list")+1], "email-mcp-zweit-") {
+			t.Errorf("reads another service's secret: %q", c)
+		}
+	}
+}
+
+// deploy.sh refuses untracked files, and the configs hold personal data:
+// every deploy*.env must be ignored, the committed example must not.
+func TestDeployConfigsAreIgnored(t *testing.T) {
+	root, _ := filepath.Abs("..")
+	for name, ignored := range map[string]bool{"deploy.env": true, "deploy-zweit.env": true, "deploy.env.example": false} {
+		err := exec.Command("git", "-C", root, "check-ignore", "-q", name).Run()
+		if (err == nil) != ignored {
+			t.Errorf("%s: ignored = %v, want %v", name, err == nil, ignored)
+		}
+	}
+}
+
 func TestDeployNeedsSecretVersions(t *testing.T) {
 	s := newSandbox(t, baseConfig)
 	s.mark("nosecrets")
