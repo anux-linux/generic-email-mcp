@@ -140,7 +140,12 @@ call mail_send_draft "{\"draft_id\":\"$D1\",\"confirm\":true}"
 check C7 "same draft cannot be sent twice" tool_error already_sent
 call mail_create_draft '{"to":["bob@example.net"],"subject":"Kickoff","body":"Monday."}'
 D2=$(jq -r .draft_id <<<"$PAYLOAD")
-[[ ${D2: -1} == A ]] && forged="${D2%?}B" || forged="${D2%?}A"
+# Change the first MAC character: all its 6 bits are data, so the ID stays
+# well-formed and only the signature is wrong. (Its last character carries
+# padding bits that must be zero; changing that one can make the ID merely
+# malformed, refused as invalid_input instead.)
+mac=${D2##*.}
+[[ ${mac:0:1} == A ]] && forged="${D2%.*}.B${mac:1}" || forged="${D2%.*}.A${mac:1}"
 call mail_send_draft "{\"draft_id\":\"$forged\",\"confirm\":true}"
 check C8 "draft id with a forged MAC refused" tool_error draft_invalid
 call mail_create_draft '{"to":["eve@evil.example"],"subject":"x","body":"y"}'
