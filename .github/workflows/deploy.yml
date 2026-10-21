@@ -1,0 +1,52 @@
+# Deploys main to Cloud Run once ci has passed for a push, or on demand
+# (Actions > deploy > Run workflow, e.g. after rotating a secret or changing
+# DEPLOY_ENV). Keyless: Workload Identity Federation accepts this job's OIDC
+# token only for this file, on main, in the production environment, on a
+# GitHub-hosted runner (scripts/gcp-github.sh, docs/DECISIONS.md D40-D43).
+#
+# The job runs only first-party code: actions/checkout and the scripts in
+# this repository, which install gcloud pinned by version and SHA-256.
+name: deploy
+
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+# One deploy at a time, never cancelled half-way. A newer run that queues
+# up replaces an older one that is still waiting.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # From ci: only a successful run for a push (never a pull request) whose
+    # commit is still the tip of main; an older one has been superseded.
+    # For workflow_run, github.sha is the tip of main when ci finished.
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_sha == github.sha)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Deploy
+        env:
+          GCP_WIF_PROVIDER: ${{ vars.GCP_WIF_PROVIDER }}
+          GCP_DEPLOY_SA: ${{ vars.GCP_DEPLOY_SA }}
+          DEPLOY_ENV: ${{ secrets.DEPLOY_ENV }}
+        run: scripts/ci-deploy.sh

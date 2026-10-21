@@ -6,12 +6,14 @@ free tier. There is no web UI: one mailbox, one owner, one OAuth client
 (claude.ai).
 
 > **Status: all five phases built** (mail core, MCP tools, HTTP + OAuth, test
-> hardening, packaging). The deploy scripts have been validated locally
-> against gcloud 570.0.0 with fakes, but never run against a real project.
-> The first real deploy and the checks in `docs/INSPECTOR.md` Parts B and C
-> are still open (`docs/VERIFY.md`).
+> hardening, packaging), plus keyless automatic deploys from GitHub. The
+> deploy scripts have been validated locally with fakes and against gcloud
+> 570.0.0 and 590.0.0 offline, but never run against a real project. The
+> first real deploy, the first automatic deploy and the checks in
+> `docs/INSPECTOR.md` Parts B and C are still open (`docs/VERIFY.md`).
 
 - [Setup](#setup)
+- [Automatic deploys from GitHub](#automatic-deploys-from-github)
 - [Connecting claude.ai](#connecting-claudeai)
 - [Operating](#operating)
 - [Security model](#security-model)
@@ -25,7 +27,7 @@ free tier. There is no web UI: one mailbox, one owner, one OAuth client
 **You need:**
 
 - a Google Cloud project with billing enabled;
-- the gcloud CLI (validated with 570.0.0);
+- the gcloud CLI (validated with 570.0.0 and 590.0.0);
 - Docker with BuildKit (Docker ≥ 23);
 - Go 1.27.3, only for hashing the owner password;
 - git, curl, jq and bash (3.2 or later; macOS's default works).
@@ -73,6 +75,8 @@ What each script does:
 | `gcp-registry.sh` | Creates the Docker repository with immutable tags and applies `deploy/cleanup-policy.json` (keep the 2 newest, delete the rest, enforced rather than dry-run). |
 | `gcp-secrets.sh` | Creates each secret in `REGION` (user-managed replication), adds a version from a hidden prompt or stdin, and grants `roles/secretmanager.secretAccessor` on that one secret to the runtime account. |
 | `deploy.sh` | Builds a linux/amd64 image tagged with the git commit and refuses a dirty tree unless `ALLOW_DIRTY=1`. Pushes it, then deploys it by digest with every flag, variable and secret set explicitly. Secrets are pinned to the newest enabled version number. Finally it checks `/healthz`, the metadata and the 401 challenge. |
+| `gcp-github.sh` | Sets up keyless deploys from GitHub: an identity pool and provider for GitHub's OIDC tokens, and a deployer service account with rights on this service's resources only (next section). |
+| `ci-deploy.sh` | Runs only in the GitHub deploy job: installs the pinned gcloud, signs in through Workload Identity Federation and runs `deploy.sh` for the existing service. |
 
 **Cloud Run settings** (in `scripts/deploy.sh`):
 
@@ -86,6 +90,63 @@ What each script does:
 | `--timeout=60` | Tool calls are capped at 45 s inside the app. |
 | `--service-account=<runtime SA>` | Not the default compute account, which has Editor. |
 | `--set-secrets=…:<version>` | Secret values are resolved at instance start; Google recommends pinning versions for that. |
+
+## Automatic deploys from GitHub
+
+Once the service runs (Setup steps 0–6), `.github/workflows/deploy.yml`
+deploys every push to `main` after `ci` has passed for it. No key or
+password is stored anywhere: the job presents GitHub's short-lived OIDC
+token, which Google's Workload Identity Federation exchanges for a
+one-hour token of a deployer service account.
+
+**One-time setup:**
+
+1. In `deploy.env`, identify the repository by name and by its numeric IDs,
+   which survive renames and cannot be claimed by someone else
+   (`gh api repos/OWNER/REPO --jq '.id, .owner.id'`):
+
+   ```sh
+   CD_REPO=anux-linux/generic-email-mcp
+   CD_REPO_ID=1427120410
+   CD_OWNER_ID=838468
+   ```
+
+2. Run `scripts/gcp-github.sh`. It creates the pool `github`, the provider
+   `email-mcp` and the service account `email-mcp-deploy`, grants the roles
+   below and prints the values for step 3.
+3. In GitHub, open **Settings → Environments → New environment** and name
+   it `production`:
+   - **Deployment branches and tags:** Selected branches and tags → `main`.
+   - **Environment variables:** `GCP_WIF_PROVIDER` and `GCP_DEPLOY_SA`, as
+     printed in step 2.
+   - **Environment secret** `DEPLOY_ENV`: the whole content of `deploy.env`,
+     e.g. `gh secret set DEPLOY_ENV --env production < deploy.env`. It holds
+     no secrets (the scripts refuse them), but it holds your address and
+     allowlist, and this repository is public. A secret is readable by the
+     deploy job only and masked in its log.
+   - Optional: **Required reviewers** → yourself, to approve each deploy.
+   The script also prints the same settings as `gh` commands.
+4. Protect `main` under **Settings → Rules → Rulesets**: block force
+   pushes and deletion. Requiring a pull request and the `check`, `image`
+   and `inspector` status checks is a good idea. Anyone who can push to
+   `main` can deploy code that reads your mail, so keep write access to
+   yourself and use two-factor authentication on GitHub.
+5. Merge into `main`. The `deploy` workflow starts when `ci` succeeds.
+
+**What the deploy job can do:**
+
+| Layer | Limit |
+|---|---|
+| Trigger | A successful `ci` run for a push to `main`, and only if that commit is still the tip of `main`; or **Actions → deploy → Run workflow** on `main`. Never a pull request. Deploys run one at a time and are never cancelled half-way. |
+| Code in the job | Only first-party code: `actions/checkout` and this repository's scripts. `ci-deploy.sh` installs gcloud 590.0.0 from Google's archive and refuses it unless its SHA-256 matches. |
+| Token exchange | The provider accepts a GitHub token only when the repository and owner IDs, `ref` (`refs/heads/main`), environment (`production`), workflow (`deploy.yml` on `main`) and runner type (GitHub-hosted) all match. |
+| Deployer account | No project role. `run.developer` on the service, `serviceAccountUser` on the runtime account, `artifactregistry.writer` on the repository, and `secretmanager.viewer` on the four secrets, which shows version numbers but never values. It cannot create services, change IAM or public access, or delete images. |
+| Public log | Your address, allowlist, client ID, login name and the service URLs are masked. |
+
+CI deploys only update the existing service (`UPDATE_ONLY`). The first
+deploy, any public-access change and all IAM changes stay with you
+(`scripts/deploy.sh`, `scripts/gcp-*.sh`). After you edit `deploy.env`,
+upload it to `DEPLOY_ENV` again; it is the deploy job's only configuration.
 
 ## Connecting claude.ai
 
@@ -109,12 +170,14 @@ and C.
 
 | Task | How |
 |---|---|
-| Deploy a new version | Commit, then `scripts/deploy.sh`. |
-| Rotate a secret | `scripts/gcp-secrets.sh <NAME>`, then `scripts/deploy.sh`. Versions are pinned, so the new one is used from that deploy on. Once it serves, destroy the old version (`gcloud secrets versions destroy N --secret=…`): Secret Manager bills active versions above 6. |
-| Revoke every token | Increase `TOKEN_EPOCH` in `deploy.env`, then `scripts/deploy.sh`. claude.ai asks you to log in again. |
-| Roll back | `gcloud run services update-traffic SERVICE --region=REGION --to-revisions=REVISION=100`. Only to a revision whose image is one of the 2 kept; with scale-to-zero, an older revision cannot start. |
+| Deploy a new version | Push to `main` (automatic deploys), or commit and run `scripts/deploy.sh`. |
+| Change the configuration | Edit `deploy.env`, upload it to the `DEPLOY_ENV` secret, then **Actions → deploy → Run workflow** (or run `scripts/deploy.sh`). |
+| Rotate a secret | `scripts/gcp-secrets.sh <NAME>`, then **Run workflow** or `scripts/deploy.sh`. Versions are pinned, so the new one is used from that deploy on. Once it serves, destroy the old version (`gcloud secrets versions destroy N --secret=…`): Secret Manager bills active versions above 6. |
+| Revoke every token | Increase `TOKEN_EPOCH` in `deploy.env`, then deploy as for a configuration change. claude.ai asks you to log in again. |
+| Roll back | `gcloud run services update-traffic SERVICE --region=REGION --to-revisions=REVISION=100`. Only to a revision whose image is one of the 2 kept; with scale-to-zero, an older revision cannot start. Revert the commit too, or the next push to `main` deploys again. |
+| Stop automatic deploys | Disable the `deploy` workflow (Actions → deploy → ⋯ → Disable workflow), or remove the deployer's access: `gcloud iam workload-identity-pools providers update-oidc email-mcp --workload-identity-pool=github --location=global --disabled`. |
 | Logs | Cloud Logging, service `SERVICE`. They contain no addresses, subjects, bodies, IDs or tokens (D20). |
-| Remove everything | Delete the Cloud Run service, the repository, the four secrets and the service account. The mailbox folders `MCP-Send-Ledger` and `MCP-Auth-State` can be deleted in webmail. |
+| Remove everything | Delete the Cloud Run service, the repository, the four secrets and both service accounts, the provider and pool (`gcloud iam workload-identity-pools providers delete email-mcp --workload-identity-pool=github --location=global`, then `gcloud iam workload-identity-pools delete github --location=global`), and the GitHub environment. The mailbox folders `MCP-Send-Ledger` and `MCP-Auth-State` can be deleted in webmail. |
 
 `BASE_URL` stays fixed across deploys. `deploy.sh` keeps the value the
 service already has, because changing it invalidates every token and the
@@ -144,7 +207,8 @@ connector. Set `BASE_URL` in `deploy.env` only to move deliberately.
 | The model is talked into sending mail | Only drafts created by this server, unchanged since (HMAC over the content), can be sent, and only with `confirm: true` after you approved. claude.ai's own tool approval adds a second gate (VERIFY C4). `SEND_ALLOWLIST` limits recipients and `MAX_SENDS_PER_DAY` caps volume; the cap is counted durably in the mailbox. From is always your address, and Bcc is never transmitted in the headers. |
 | The model is talked into destroying mail | Impossible through this server: EXPUNGE, CLOSE, DELETE and STORE `\Deleted` are blocked on the wire; "delete" means moving to Trash. Reading never marks mail as read. Mail cannot be moved into or out of the ledger and auth-state folders, which hold no secrets. |
 | Secret leakage | The secrets live in Secret Manager in your region. The runtime service account can read only those four and has no other role. The scripts refuse secrets in `deploy.env`, pass values only through pipes, and `gen-secrets.sh` writes nothing to disk. A redacting log handler is enforced by tests; the image has no shell. |
-| Supply chain | Go modules pinned in `go.sum` and verified. govulncheck in the gate. Base images pinned by digest; distroless static, nonroot (65532), CGO-free static binary. CI actions are referenced by exact tag rather than commit SHA (your decision, D35). |
+| Supply chain | Go modules pinned in `go.sum` and verified. govulncheck in the gate. Base images pinned by digest; distroless static, nonroot (65532), CGO-free static binary. CI actions are referenced by exact tag rather than commit SHA (your decision, D35). The deploy job runs no third-party action, and gcloud there is pinned by version and SHA-256 (D42). |
+| Someone abuses the deploy pipeline | No stored credential to steal. Google accepts only an OIDC token from this repository (numeric IDs), from `deploy.yml` on `main`, in the `production` environment, on a GitHub-hosted runner. Pull requests and forks never reach the deploy job, and the environment admits only `main`. The deployer has no project role and cannot read secret values or change IAM (D40, D41). |
 | Cost abuse / DoS | At most 1 instance and request size limits. Per-IP and global rate limits on `/authorize` and `/token` answer 429 before any password hashing. A forged bearer token costs one HMAC check. Budget alert (below). |
 
 **Residual risks** (accepted or open):
@@ -162,6 +226,11 @@ connector. Set `BASE_URL` in `deploy.env` only to move deliberately.
   undetected (VERIFY H3).
 - The owner password is the last line of defence on `/authorize`. Use 16 or
   more random characters; it is rate-limited and hashed with argon2id.
+- With automatic deploys, whoever can push to `main` (or controls your
+  GitHub account) can deploy code that runs as the runtime account and so
+  reads the mailbox password. GitHub itself, and the `actions/checkout`
+  tag, are trusted. Protect `main`, keep write access to yourself and use
+  two-factor authentication.
 
 ## Costs and budget alert
 
@@ -200,9 +269,12 @@ through the Budget API, not with gcloud. The recipe above does not use it
 ## Configuration reference
 
 `deploy.env` holds the deployment settings (`PROJECT_ID`, `REGION`,
-`SERVICE`, `REPOSITORY`, `RUNTIME_SA_NAME`, `PUBLIC_ACCESS`) and the service
-variables below. It is parsed as `KEY=value`, never executed; unknown keys
-and secrets are rejected. Secrets (★) come from Secret Manager.
+`SERVICE`, `REPOSITORY`, `RUNTIME_SA_NAME`, `PUBLIC_ACCESS`), the settings
+for automatic deploys (`CD_REPO`, `CD_REPO_ID`, `CD_OWNER_ID`, and
+optionally `WIF_POOL`, `WIF_PROVIDER`, `DEPLOY_SA_NAME`; see
+`deploy.env.example`) and the service variables below. It is parsed as
+`KEY=value`, never executed; unknown keys and secrets are rejected. Secrets
+(★) come from Secret Manager.
 
 ### Service
 
@@ -272,8 +344,9 @@ scripts/inspector-local.sh      # the real binary + MCP Inspector 2.11.0 CLI aga
 ```
 
 CI (`.github/workflows/ci.yml`) runs the gate, the image check and the
-Inspector checklist on every push; the fuzz pass runs weekly. See
-`docs/TESTING.md` for what each test proves.
+Inspector checklist on every push; the fuzz pass runs weekly. After a green
+push to `main`, `.github/workflows/deploy.yml` deploys it (see Automatic
+deploys). See `docs/TESTING.md` for what each test proves.
 
 | Path | Contents |
 |---|---|

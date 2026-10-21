@@ -144,5 +144,22 @@ No test or check here contacts Google Cloud.
 | Secret Manager scripts | `scripts.TestSecretsGoThroughStdinOnly` (value only on gcloud's stdin, never in argv; regional replication; per-secret accessor binding), `…ValidateBeforeStoring`, `…StoresPasswordHashNotPassword` |
 | Registry cleanup keeps the last 2 images | `scripts.TestRegistryCleanupPolicy`: immutable-tag repository; policy keep-2 + delete-rest applied with `--no-dry-run` |
 | Runtime account has no project role | `scripts.TestBootstrap` |
-| The gcloud command lines are valid | Recorded calls replayed offline against gcloud 570.0.0 (VERIFY, Cloud Run section) |
+| The gcloud command lines are valid | Recorded calls replayed offline against gcloud 570.0.0 and 590.0.0 (VERIFY, Cloud Run and automatic-deploy sections) |
 | Shell quality | shellcheck at warning level in `scripts/check.sh` when installed (preinstalled on GitHub's Ubuntu runners) |
+
+## Phase 6: automatic deploys from GitHub
+
+No test or check here contacts Google Cloud or GitHub's OIDC service.
+
+| Requirement | Tests |
+|---|---|
+| Keyless trust limited to this repository, `deploy.yml`, `main`, `production` and GitHub-hosted runners | `scripts.TestGitHubSetup` (exact attribute condition, mapping, issuer, principal set by repository ID), `…UpdatesProvider` (a re-run updates the condition in place) |
+| Deployer has least privilege | `scripts.TestGitHubSetup`: exactly 8 grants, each on one resource (service, runtime account, repository, four secrets), and no project role |
+| Setup refuses unsafe or incomplete states | `scripts.TestGitHubSetupRefuses`: no service yet, missing secrets, no repository IDs, deleted pool or provider. In each case no provider or binding is changed |
+| CI only updates and never changes public access | `scripts.TestDeployUpdateOnly`, `…UpdateOnlyNeedsService` |
+| Nothing personal in the public log | `scripts.TestDeployMasksPersonalValuesInGitHubActions` (address, client ID, allowlist and its entries, service URLs are masked before their first use), `…DoesNotMaskOutsideGitHubActions` |
+| Credentials handled safely in the job | `scripts.TestCIDeploy`: exact external-account file, mode 0600, request token never in argv, sign-in before any other gcloud call, work directory removed, `UPDATE_ONLY` deploy |
+| Pinned gcloud only | `scripts.TestCIDeployVerifiesGcloudChecksum`: a download that does not match the pinned SHA-256 is refused before any gcloud or docker call |
+| Job preconditions | `scripts.TestCIDeployRefuses`: outside Actions, no `id-token`, no `DEPLOY_ENV`, malformed provider, foreign service account, secret in `DEPLOY_ENV`. Each is refused with no external call |
+| Workflow and provider agree; only first-party code in the job | `scripts.TestDeployWorkflowMatchesCondition`. `actionlint` checks the workflow syntax |
+| The tests detect breakage | Mutation-checked: removing any mask, the `UPDATE_ONLY` branches, the checksum check, the `umask`, the account check or a condition clause, or widening a role, makes a test fail |

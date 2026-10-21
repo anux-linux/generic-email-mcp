@@ -14,6 +14,10 @@
 # pinned by number) are all set, so nothing is inherited from an earlier
 # revision. The image is deployed by digest.
 #
+# UPDATE_ONLY=1 (set by scripts/ci-deploy.sh) updates an existing service
+# and leaves its public access as it is. The deploying identity then needs
+# rights on this one service only, not on the project (scripts/gcp-github.sh).
+#
 # Prerequisites: scripts/gcp-bootstrap.sh, scripts/gcp-registry.sh,
 # scripts/gcp-secrets.sh all, and
 # gcloud auth configure-docker <REGION>-docker.pkg.dev
@@ -42,11 +46,27 @@ service_url() {
 		// .status.url // empty'
 }
 
-exists=$(gc run services list --region="$REGION" --filter="metadata.name=$SERVICE" --format='value(metadata.name)')
-url=${BASE_URL:-}
-if [[ -z $url && -n $exists ]]; then
-	url=$(current_base_url "$(describe)")
+# mask_urls <describe json>: every URL of the service (gcloud prints one
+# after each deploy) is masked in the public GitHub Actions log.
+mask_urls() {
+	printf '%s' "$1" | jq -r '((.metadata.annotations["run.googleapis.com/urls"] // "[]") | fromjson[]), (.status.url // empty)' |
+		while IFS= read -r u; do mask "$u"; done
+}
+
+# Listing services needs a project-wide permission; in UPDATE_ONLY mode the
+# service must exist, and describe fails if it does not.
+if [[ ${UPDATE_ONLY:-} == 1 ]]; then
+	exists=$SERVICE
+else
+	exists=$(gc run services list --region="$REGION" --filter="metadata.name=$SERVICE" --format='value(metadata.name)')
 fi
+url=${BASE_URL:-}
+if [[ -n $exists ]]; then
+	svc=$(describe) || die "cannot read service $SERVICE; it must exist (a first scripts/deploy.sh as owner) and be readable"
+	mask_urls "$svc"
+	[[ -n $url ]] || url=$(current_base_url "$svc")
+fi
+mask "$url"
 
 secrets=""
 for key in "${SECRET_KEYS[@]}"; do
@@ -94,16 +114,16 @@ env_vars() {
 	printf '^|^%s' "$out"
 }
 
-# allow-unauthenticated grants roles/run.invoker to allUsers; organizations
-# with domain restricted sharing forbid that, so the alternative disables
-# the invoker check instead. Either way the app does all authentication.
-access=--allow-unauthenticated
-[[ $PUBLIC_ACCESS == no-invoker-iam-check ]] && access=--no-invoker-iam-check
+# Public access is part of every deploy, except in UPDATE_ONLY mode: setting
+# it changes the service's IAM policy, which a deployer limited to
+# roles/run.developer may not do. The setting persists across revisions.
+access=()
+[[ ${UPDATE_ONLY:-} == 1 ]] || access=("$(access_flag)")
 
 # --max-instances caps each revision, --max the whole service.
 deploy() {
 	mut run deploy "$SERVICE" --region="$REGION" --image="$IMAGE@$digest" \
-		--service-account="$SA_EMAIL" "$access" --ingress=all --port=8080 \
+		--service-account="$SA_EMAIL" ${access[@]+"${access[@]}"} --ingress=all --port=8080 \
 		--min-instances=0 --max-instances=1 --max=1 --cpu=1 --memory=256Mi --timeout=60 \
 		--execution-environment=gen1 --cpu-throttling \
 		--set-env-vars="$(env_vars "$1")" --set-secrets="$secrets"
@@ -112,7 +132,9 @@ deploy() {
 if [[ -z $url ]]; then
 	say "step 1/2: deploy in setup mode to learn the service URL"
 	deploy ""
-	url=$(service_url "$(describe)")
+	svc=$(describe)
+	mask_urls "$svc"
+	url=$(service_url "$svc")
 	[[ $url =~ ^https://[a-z0-9.-]+$ ]] || die "unexpected service URL '$url'"
 	say "step 2/2: redeploy with BASE_URL=$url"
 fi

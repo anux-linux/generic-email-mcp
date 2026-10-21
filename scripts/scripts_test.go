@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -53,9 +54,13 @@ const fakeGcloud = fakePrelude + `case $args in
 		for p in "${kv[@]}"; do [[ $p == BASE_URL=* ]] && printf '%s' "${p#BASE_URL=}" > "$S/baseurl"; done
 	done ;;
 *" artifacts docker images describe "*) [[ -f $S/pushed ]] && echo "$FAKE_DIGEST" || exit 1 ;;
+*" projects describe "*) echo 123456789012 ;;
+*" workload-identity-pools providers describe "*) [[ -f $S/provider ]] && cat "$S/provider" || exit 1 ;;
+*" workload-identity-pools describe "*) [[ -f $S/pool ]] && cat "$S/pool" || exit 1 ;;
+*" auth login "*) for a in "$@"; do [[ $a == --cred-file=* ]] && cp -p "${a#--cred-file=}" "$S/credentials.json"; done ;;
 *" artifacts repositories describe "*) exit 1 ;;
 *" iam service-accounts describe "*) exit 1 ;;
-*" secrets describe "*) exit 1 ;;
+*" secrets describe "*) [[ -f $S/secrets ]] || exit 1 ;;
 *" secrets versions add "*) cat > "$S/stdin.$id" ;;
 *" secrets versions list "*" --limit=1 "*) [[ -f $S/nosecrets ]] || echo 3 ;;
 *" secrets versions list "*) echo projects/1/secrets/x/versions/3 ;;
@@ -67,9 +72,12 @@ const fakeDocker = fakePrelude + `[[ $1 == push ]] && touch "$S/pushed"
 exit 0
 `
 
+// A download (-o FILE) never delivers the pinned gcloud tarball.
 const fakeCurl = fakePrelude + `url=${!#}
 case $args in
 *" -w "*) printf 401 ;;
+*" -o "*) prev=""
+	for a in "$@"; do [[ $prev == -o ]] && echo "not the pinned tarball" > "$a"; prev=$a; done ;;
 *) case $url in
 	*/healthz) echo ok ;;
 	*/.well-known/oauth-protected-resource/mcp) printf '{"resource":"%s/mcp"}' "${FAKE_RESOURCE_BASE:-${url%%/.well-known/*}}" ;;
@@ -212,7 +220,19 @@ const wantSecrets = "MAIL_PASSWORD=email-mcp-mail-password:3,TOKEN_SIGNING_KEY=e
 
 func checkDeployCall(t *testing.T, argv []string, wantBaseURL string) {
 	t.Helper()
-	for _, f := range []string{"--allow-unauthenticated", "--cpu-throttling", "--quiet", "--project=test-project-1",
+	checkDeployCallAccess(t, argv, wantBaseURL, "--allow-unauthenticated")
+}
+
+// checkDeployCallAccess is checkDeployCall with the public access flag
+// expected (none if empty).
+func checkDeployCallAccess(t *testing.T, argv []string, wantBaseURL, access string) {
+	t.Helper()
+	for _, f := range []string{"--allow-unauthenticated", "--no-invoker-iam-check"} {
+		if slices.Contains(argv, f) != (f == access) {
+			t.Errorf("deploy call: %s present = %v, want %v:\n%q", f, !(f == access), f == access, argv)
+		}
+	}
+	for _, f := range []string{"--cpu-throttling", "--quiet", "--project=test-project-1",
 		"--region=europe-west1", "--min-instances=0", "--max-instances=1", "--max=1", "--cpu=1", "--memory=256Mi", "--timeout=60",
 		"--execution-environment=gen1", "--ingress=all", "--port=8080",
 		"--service-account=email-mcp-run@test-project-1.iam.gserviceaccount.com",
@@ -422,6 +442,10 @@ func TestConfigValidation(t *testing.T) {
 		"bad region":       {baseConfig + "REGION=europe west1\n", "not a valid region"},
 		"bad account id":   {baseConfig + "RUNTIME_SA_NAME=sa\n", "not a valid account ID"},
 		"bad access mode":  {baseConfig + "PUBLIC_ACCESS=everyone\n", "PUBLIC_ACCESS must be"},
+		"bad repository":   {baseConfig + "CD_REPO=no-slash\n", "CD_REPO must be OWNER/REPOSITORY"},
+		"quote in repo id": {baseConfig + "CD_REPO_ID=1' && true && '1\n", "CD_REPO_ID must be the numeric"},
+		"reserved pool id": {baseConfig + "WIF_POOL=gcp-github\n", "not starting with gcp-"},
+		"shared accounts":  {baseConfig + "DEPLOY_SA_NAME=email-mcp-run\n", "DEPLOY_SA_NAME must differ"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			s := newSandbox(t, tc.config)
@@ -601,6 +625,377 @@ func TestGenSecrets(t *testing.T) {
 	for k := range a {
 		if a[k] == b[k] {
 			t.Errorf("%s repeated across runs", k)
+		}
+	}
+}
+
+// --- deploys from GitHub Actions ----------------------------------------------
+
+const (
+	cdConfig    = baseConfig + "CD_REPO=anux-linux/generic-email-mcp\nCD_REPO_ID=1427120410\nCD_OWNER_ID=838468\n"
+	wifProvider = "projects/123456789012/locations/global/workloadIdentityPools/github/providers/email-mcp"
+	deploySA    = "email-mcp-deploy@test-project-1.iam.gserviceaccount.com"
+	wantCond    = "assertion.repository_id == '1427120410' && assertion.repository_owner_id == '838468'" +
+		" && assertion.ref == 'refs/heads/main' && assertion.environment == 'production'" +
+		" && assertion.workflow_ref == 'anux-linux/generic-email-mcp/.github/workflows/deploy.yml@refs/heads/main'" +
+		" && assertion.runner_environment == 'github-hosted'"
+)
+
+// bindings returns every add-iam-policy-binding call as
+// "<resource kind> <resource> <member> <role>".
+func (s *sandbox) bindings() []string {
+	s.t.Helper()
+	var out []string
+	for _, c := range s.calls("gcloud", "add-iam-policy-binding") {
+		i := slices.Index(c, "add-iam-policy-binding")
+		member, _ := flag(c, "member")
+		role, _ := flag(c, "role")
+		out = append(out, strings.Join(c[3:i], " ")+" "+c[i+1]+" "+member+" "+role)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func TestGitHubSetup(t *testing.T) {
+	s := newSandbox(t, cdConfig)
+	s.mark("service")
+	s.mark("secrets")
+	out, err := s.run("", "gcp-github.sh")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if len(s.calls("gcloud", "services", "enable", "iam.googleapis.com", "cloudresourcemanager.googleapis.com",
+		"iamcredentials.googleapis.com", "sts.googleapis.com")) != 1 {
+		t.Error("APIs not enabled")
+	}
+	if len(s.calls("gcloud", "iam", "workload-identity-pools", "create", "github", "--location=global")) != 1 {
+		t.Error("pool not created")
+	}
+	creates := s.calls("gcloud", "workload-identity-pools", "providers", "create-oidc", "email-mcp",
+		"--workload-identity-pool=github", "--location=global", "--issuer-uri=https://token.actions.githubusercontent.com",
+		"--attribute-mapping=google.subject=assertion.sub,attribute.repository_id=assertion.repository_id")
+	if len(creates) != 1 {
+		t.Fatalf("provider create calls = %q", s.calls("gcloud", "providers"))
+	}
+	if c, _ := flag(creates[0], "attribute-condition"); c != wantCond {
+		t.Errorf("attribute condition\n got %s\nwant %s", c, wantCond)
+	}
+	if len(s.calls("gcloud", "iam", "service-accounts", "create", "email-mcp-deploy")) != 1 {
+		t.Error("deployer service account not created")
+	}
+	// Least privilege: exactly these grants, each on one resource; no
+	// project-level role.
+	member := "serviceAccount:" + deploySA
+	want := []string{
+		"artifacts repositories email-mcp " + member + " roles/artifactregistry.writer",
+		"iam service-accounts " + deploySA + " principalSet://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/github/attribute.repository_id/1427120410 roles/iam.workloadIdentityUser",
+		"iam service-accounts email-mcp-run@test-project-1.iam.gserviceaccount.com " + member + " roles/iam.serviceAccountUser",
+		"run services email-mcp " + member + " roles/run.developer",
+	}
+	for _, key := range []string{"authorize-password-hash", "mail-password", "oauth-client-secret", "token-signing-key"} {
+		want = append(want, "secrets email-mcp-"+key+" "+member+" roles/secretmanager.viewer")
+	}
+	sort.Strings(want)
+	if got := s.bindings(); !slices.Equal(got, want) {
+		t.Errorf("bindings\n got %q\nwant %q", got, want)
+	}
+	if n := len(s.calls("gcloud", "projects", "add-iam-policy-binding")); n != 0 {
+		t.Error("project-level role granted")
+	}
+	for _, w := range []string{"GCP_WIF_PROVIDER   " + wifProvider, "GCP_DEPLOY_SA      " + deploySA,
+		"gh secret set DEPLOY_ENV --repo anux-linux/generic-email-mcp --env production < deploy.env"} {
+		if !strings.Contains(out, w) {
+			t.Errorf("output lacks %q:\n%s", w, out)
+		}
+	}
+}
+
+// Re-running keeps the pool and brings the provider's condition up to date.
+func TestGitHubSetupUpdatesProvider(t *testing.T) {
+	s := newSandbox(t, cdConfig)
+	s.mark("service")
+	s.mark("secrets")
+	s.markValue("pool", "ACTIVE")
+	s.markValue("provider", "ACTIVE")
+	if out, err := s.run("", "gcp-github.sh"); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if n := len(s.calls("gcloud", "create")) + len(s.calls("gcloud", "create-oidc")); n != 1 { // the service account
+		t.Errorf("%d create calls, want 1: %q", n, s.calls("gcloud"))
+	}
+	updates := s.calls("gcloud", "providers", "update-oidc", "email-mcp", "--issuer-uri=https://token.actions.githubusercontent.com")
+	if len(updates) != 1 {
+		t.Fatalf("update-oidc calls = %q", updates)
+	}
+	if c, _ := flag(updates[0], "attribute-condition"); c != wantCond {
+		t.Errorf("attribute condition %s", c)
+	}
+}
+
+func TestGitHubSetupRefuses(t *testing.T) {
+	for name, tc := range map[string]struct {
+		config string
+		marks  map[string]string
+		want   string
+	}{
+		"no service":       {cdConfig, map[string]string{"secrets": ""}, "deploy it once with scripts/deploy.sh"},
+		"no secrets":       {cdConfig, map[string]string{"service": ""}, "run scripts/gcp-secrets.sh MAIL_PASSWORD"},
+		"no repository":    {baseConfig, map[string]string{"service": "", "secrets": ""}, "set CD_REPO, CD_REPO_ID and CD_OWNER_ID"},
+		"deleted provider": {cdConfig, map[string]string{"service": "", "secrets": "", "pool": "ACTIVE", "provider": "DELETED"}, "providers undelete email-mcp"},
+		"deleted pool":     {cdConfig, map[string]string{"service": "", "secrets": "", "pool": "DELETED"}, "workload-identity-pools undelete github"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := newSandbox(t, tc.config)
+			for k, v := range tc.marks {
+				s.markValue(k, v)
+			}
+			out, err := s.run("", "gcp-github.sh")
+			if err == nil || !strings.Contains(out, tc.want) {
+				t.Fatalf("want error %q, got %v\n%s", tc.want, err, out)
+			}
+			if n := len(s.calls("gcloud", "add-iam-policy-binding")) + len(s.calls("gcloud", "create-oidc")) + len(s.calls("gcloud", "update-oidc")); n != 0 {
+				t.Errorf("%d provider or binding changes despite the error", n)
+			}
+		})
+	}
+}
+
+// UPDATE_ONLY (CI): no project-wide listing, public access left alone,
+// everything else as declarative as a local deploy.
+func TestDeployUpdateOnly(t *testing.T) {
+	s := newSandbox(t, baseConfig)
+	s.mark("service")
+	s.markValue("baseurl", fakeURL)
+	s.env = append(s.env, "UPDATE_ONLY=1")
+	if out, err := s.run("", "deploy.sh"); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	if n := len(s.calls("gcloud", "run", "services", "list")); n != 0 {
+		t.Errorf("%d service list calls", n)
+	}
+	deploys := s.calls("gcloud", "run", "deploy")
+	if len(deploys) != 1 {
+		t.Fatalf("%d deploy calls, want 1", len(deploys))
+	}
+	checkDeployCallAccess(t, deploys[0], fakeURL, "")
+}
+
+func TestDeployUpdateOnlyNeedsService(t *testing.T) {
+	s := newSandbox(t, baseConfig)
+	s.env = append(s.env, "UPDATE_ONLY=1")
+	out, err := s.run("", "deploy.sh")
+	if err == nil || !strings.Contains(out, "cannot read service email-mcp") {
+		t.Fatalf("missing service not reported: %v\n%s", err, out)
+	}
+	if n := len(s.calls("gcloud", "run", "deploy")) + len(s.calls("docker")); n != 0 {
+		t.Fatalf("%d build/deploy calls without a service", n)
+	}
+}
+
+// checkMasked asserts that each value is masked before any printed line
+// contains it. Mask commands themselves are consumed by the runner.
+func checkMasked(t *testing.T, out string, values ...string) {
+	t.Helper()
+	for _, v := range values {
+		masked, used := false, false
+		for line := range strings.SplitSeq(out, "\n") {
+			switch {
+			case line == "::add-mask::"+v:
+				masked = true
+			case strings.HasPrefix(line, "::add-mask::"):
+			case strings.Contains(line, v):
+				used = true
+				if !masked {
+					t.Errorf("%q printed before it was masked: %q", v, line)
+				}
+			}
+		}
+		if !used {
+			t.Errorf("%q never printed; the check proves nothing", v)
+		}
+	}
+}
+
+func TestDeployMasksPersonalValuesInGitHubActions(t *testing.T) {
+	s := newSandbox(t, baseConfig+"AUTHORIZE_USERNAME=the-owner\n")
+	s.env = append(s.env, "GITHUB_ACTIONS=true")
+	out, err := s.run("", "deploy.sh")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	checkMasked(t, out, "me@example.org", "claude-0123456789abcdef", "example.org,friend@example.net",
+		"friend@example.net", fakeURL)
+}
+
+func TestDeployDoesNotMaskOutsideGitHubActions(t *testing.T) {
+	s := newSandbox(t, baseConfig)
+	out, err := s.run("", "deploy.sh")
+	if err != nil || strings.Contains(out, "::add-mask::") {
+		t.Fatalf("%v\n%s", err, out)
+	}
+}
+
+func ciSandbox(t *testing.T, deployEnv string) (*sandbox, string) {
+	t.Helper()
+	s := newSandbox(t, "unused: ci-deploy.sh writes its own\n")
+	tmp := t.TempDir()
+	s.env = slices.DeleteFunc(s.env, func(e string) bool { return e == "YES=1" || strings.HasPrefix(e, "CONFIG=") })
+	s.env = append(s.env, "GITHUB_ACTIONS=true", "RUNNER_TEMP="+tmp,
+		"ACTIONS_ID_TOKEN_REQUEST_URL=https://token.actions.example/id?api-version=2.0",
+		"ACTIONS_ID_TOKEN_REQUEST_TOKEN=request-token-0123456789",
+		"GCP_WIF_PROVIDER="+wifProvider, "GCP_DEPLOY_SA="+deploySA, "DEPLOY_ENV="+deployEnv)
+	return s, tmp
+}
+
+func TestCIDeploy(t *testing.T) {
+	s, tmp := ciSandbox(t, cdConfig)
+	s.env = append(s.env, "SKIP_GCLOUD_INSTALL=1")
+	s.mark("service")
+	s.markValue("baseurl", fakeURL)
+	out, err := s.run("", "ci-deploy.sh")
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	gcloud := s.calls("gcloud")
+	if len(gcloud) == 0 || !containsAll(gcloud[0], "auth", "login") {
+		t.Fatalf("first gcloud call is not the sign-in: %q", gcloud)
+	}
+	if len(s.calls("gcloud", "auth", "configure-docker", "europe-west1-docker.pkg.dev", "--quiet")) != 1 {
+		t.Error("Docker not configured for Artifact Registry")
+	}
+	deploys := s.calls("gcloud", "run", "deploy")
+	if len(deploys) != 1 || len(s.calls("gcloud", "run", "services", "list")) != 0 {
+		t.Fatalf("not an UPDATE_ONLY deploy: %q", s.calls("gcloud", "run"))
+	}
+	checkDeployCallAccess(t, deploys[0], fakeURL, "")
+	checkMasked(t, out, "me@example.org", "claude-0123456789abcdef", "friend@example.net", fakeURL)
+
+	// The credential configuration: external account, impersonation, and
+	// the request token only inside this 0600 file, never in an argument.
+	path := filepath.Join(s.state, "credentials.json")
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Errorf("credential file mode %v", fi.Mode().Perm())
+	}
+	var cred struct {
+		Type, Audience   string
+		TokenURL         string `json:"token_url"`
+		SubjectTokenType string `json:"subject_token_type"`
+		Source           struct {
+			URL     string
+			Headers map[string]string
+			Format  struct {
+				Type  string
+				Field string `json:"subject_token_field_name"`
+			}
+		} `json:"credential_source"`
+		Impersonation string `json:"service_account_impersonation_url"`
+	}
+	b, _ := os.ReadFile(path)
+	if err := json.Unmarshal(b, &cred); err != nil {
+		t.Fatal(err)
+	}
+	if cred.Type != "external_account" || cred.Audience != "//iam.googleapis.com/"+wifProvider ||
+		cred.TokenURL != "https://sts.googleapis.com/v1/token" || cred.SubjectTokenType != "urn:ietf:params:oauth:token-type:jwt" ||
+		cred.Source.URL != "https://token.actions.example/id?api-version=2.0&audience="+url.QueryEscape("https://iam.googleapis.com/"+wifProvider) ||
+		cred.Source.Headers["Authorization"] != "Bearer request-token-0123456789" ||
+		cred.Source.Format.Type != "json" || cred.Source.Format.Field != "value" ||
+		cred.Impersonation != "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/"+deploySA+":generateAccessToken" {
+		t.Errorf("credential configuration:\n%s", b)
+	}
+	for _, c := range s.calls("") {
+		if strings.Contains(strings.Join(c, " "), "request-token") {
+			t.Errorf("request token in argv: %q", c)
+		}
+	}
+	if left, _ := os.ReadDir(tmp); len(left) != 0 {
+		t.Errorf("work directory left behind: %v", left)
+	}
+}
+
+// Without SKIP_GCLOUD_INSTALL the download must match the pinned SHA-256;
+// the fake curl delivers something else.
+func TestCIDeployVerifiesGcloudChecksum(t *testing.T) {
+	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
+		t.Skip("the pinned gcloud is for linux/amd64")
+	}
+	s, _ := ciSandbox(t, cdConfig)
+	s.mark("service")
+	out, err := s.run("", "ci-deploy.sh")
+	if err == nil || !strings.Contains(out, "SHA-256 mismatch") {
+		t.Fatalf("unverified download accepted: %v\n%s", err, out)
+	}
+	if n := len(s.calls("gcloud")) + len(s.calls("docker")); n != 0 {
+		t.Errorf("%d gcloud/docker calls after a bad download", n)
+	}
+	if len(s.calls("curl", "https://storage.googleapis.com/cloud-sdk-release/google-cloud-cli-590.0.0-linux-x86_64.tar.gz")) != 1 {
+		t.Error("not downloaded from the pinned URL")
+	}
+}
+
+func TestCIDeployRefuses(t *testing.T) {
+	for name, tc := range map[string]struct {
+		drop, add []string
+		want      string
+	}{
+		"outside actions":  {[]string{"GITHUB_ACTIONS"}, nil, "runs in GitHub Actions only"},
+		"no id token":      {[]string{"ACTIONS_ID_TOKEN_REQUEST_TOKEN"}, nil, "id-token: write"},
+		"no config":        {[]string{"DEPLOY_ENV"}, nil, "DEPLOY_ENV is not set"},
+		"bad provider":     {nil, []string{"GCP_WIF_PROVIDER=projects/x/providers/y"}, "GCP_WIF_PROVIDER must be"},
+		"other account":    {nil, []string{"GCP_DEPLOY_SA=someone-else@test-project-1.iam.gserviceaccount.com"}, "GCP_DEPLOY_SA is not the deployer"},
+		"secret in config": {nil, []string{"DEPLOY_ENV=" + cdConfig + "MAIL_PASSWORD=x\n"}, "MAIL_PASSWORD is a secret"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, _ := ciSandbox(t, cdConfig)
+			s.env = slices.DeleteFunc(s.env, func(e string) bool {
+				k, _, _ := strings.Cut(e, "=")
+				return slices.Contains(tc.drop, k) || slices.ContainsFunc(tc.add, func(a string) bool { return strings.HasPrefix(a, k+"=") })
+			})
+			s.env = append(s.env, append(tc.add, "SKIP_GCLOUD_INSTALL=1")...)
+			s.mark("service")
+			out, err := s.run("", "ci-deploy.sh")
+			if err == nil || !strings.Contains(out, tc.want) {
+				t.Fatalf("want error %q, got %v\n%s", tc.want, err, out)
+			}
+			if n := len(s.calls("")); n != 0 {
+				t.Errorf("%d external calls despite the error", n)
+			}
+		})
+	}
+}
+
+// The workflow and the provider's condition must agree on file, branch and
+// environment, and the privileged job must run only first-party code.
+func TestDeployWorkflowMatchesCondition(t *testing.T) {
+	root, _ := filepath.Abs("..")
+	wf, err := os.ReadFile(filepath.Join(root, ".github", "workflows", "deploy.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	setup, _ := os.ReadFile(filepath.Join(root, "scripts", "gcp-github.sh"))
+	ci, _ := os.ReadFile(filepath.Join(root, ".github", "workflows", "ci.yml"))
+	for _, w := range []string{"WORKFLOW=.github/workflows/deploy.yml\n", "BRANCH=main\n", "ENVIRONMENT=production\n"} {
+		if !strings.Contains(string(setup), w) {
+			t.Errorf("gcp-github.sh lacks %q", w)
+		}
+	}
+	for _, w := range []string{"    workflows: [ci]\n", "    branches: [main]\n", "github.ref == 'refs/heads/main'",
+		"    environment: production\n", "      id-token: write\n", "\npermissions: {}\n", "cancel-in-progress: false",
+		"github.event.workflow_run.event == 'push'", "github.event.workflow_run.head_sha == github.sha",
+		"run: scripts/ci-deploy.sh\n"} {
+		if !strings.Contains(string(wf), w) {
+			t.Errorf("deploy.yml lacks %q", w)
+		}
+	}
+	if !strings.Contains(string(ci), "\nname: ci\n") {
+		t.Error("ci.yml is not named ci, so deploy.yml would never trigger")
+	}
+	for _, m := range regexp.MustCompile(`uses:\s*(\S+)`).FindAllStringSubmatch(string(wf), -1) {
+		if !strings.HasPrefix(m[1], "actions/checkout@") {
+			t.Errorf("third-party action in the deploy job: %s", m[1])
 		}
 	}
 }
