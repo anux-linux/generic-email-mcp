@@ -11,7 +11,8 @@ coverage.*
 # Local secrets and deployment config must never be committed
 .env
 .env.*
-/deploy.env
+# deploy.env and one deploy-<name>.env per further mailbox (README)
+/deploy*.env
 *.pem
 *.key
 

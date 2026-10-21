@@ -17,6 +17,7 @@ free tier. There is no web UI: one mailbox, one owner, one OAuth client
 - [Automatic deploys from GitHub](#automatic-deploys-from-github)
 - [Connecting claude.ai](#connecting-claudeai)
 - [Operating](#operating)
+- [A second mailbox](#a-second-mailbox)
 - [Security model](#security-model)
 - [Costs and budget alert](#costs-and-budget-alert)
 - [Configuration reference](#configuration-reference)
@@ -189,6 +190,63 @@ and C.
 service already has, because changing it invalidates every token and the
 connector. Set `BASE_URL` in `deploy.env` only to move deliberately.
 
+## A second mailbox
+
+Each mailbox gets its own deployment of the same code: its own Cloud Run
+service, runtime account, secrets, OAuth client and claude.ai connector.
+Nothing is shared except the project and the image repository. So
+prompt injection in one mailbox cannot make Claude send from the other,
+and each has its own allowlist, send cap and login (D47).
+
+1. Create a second configuration next to `deploy.env`. Files matching
+   `deploy*.env` are git-ignored, which `deploy.sh` needs: it refuses to
+   run with untracked files in the tree.
+
+   ```sh
+   cp deploy.env deploy-zweit.env && $EDITOR deploy-zweit.env
+   #   SERVICE=email-mcp-zweit                 its own service, secrets and image
+   #   RUNTIME_SA_NAME=email-mcp-zweit-run     its own account: neither service can read the other's secrets
+   #   MAIL_USERNAME=…, MAIL_FROM_NAME=…, SEND_ALLOWLIST=…
+   #   OAUTH_CLIENT_ID=…                       new, from step 2
+   #   remove BASE_URL if you set one; drop the CD_* lines (automatic deploys cover deploy.env only)
+   ```
+
+2. Run the setup scripts with `CONFIG` pointing at it:
+
+   ```sh
+   scripts/gen-secrets.sh                              # new signing key and OAuth client
+   CONFIG=deploy-zweit.env scripts/gcp-bootstrap.sh    # creates the second runtime account
+   CONFIG=deploy-zweit.env scripts/gcp-secrets.sh all  # its four secrets, readable by that account only
+   CONFIG=deploy-zweit.env scripts/deploy.sh           # two-step first deploy, prints the connector URL
+   ```
+
+3. Add a second custom connector in claude.ai with that URL and the new
+   client ID and secret. Name the connectors clearly, for example
+   "Kulturtelefon Mail" and "Privat Mail": both offer tools with the same
+   names. Set `mail_send_draft` to "always ask" again.
+4. Run the live checks of `docs/INSPECTOR.md` Part B against the new
+   mailbox. Folder names and Sent-copy behaviour differ between providers.
+
+**Other providers:** the server signs in with a password over implicit TLS
+(IMAP 993, SMTP 465).
+- **Another Strato mailbox:** works as is.
+- **Gmail:** needs an app password, which requires two-step verification on
+  that Google account. Set `MAIL_IMAP_ADDR=imap.gmail.com:993` and
+  `MAIL_SMTP_ADDR=smtp.gmail.com:465`. Gmail files SMTP-sent mail into Sent
+  by itself, so set `MAIL_SAVE_SENT=false` to avoid duplicates; check this
+  after the first send.
+- **Microsoft accounts and many Google Workspace setups:** they accept only
+  OAuth sign-in (XOAUTH2) for IMAP/SMTP, which the server does not support.
+
+**Costs:** Cloud Run and Artifact Registry stay within the free tiers, which
+are per billing account. Secret Manager's free tier covers 6 active secret
+versions, and two mailboxes need 8. The other 2 are billed at Secret
+Manager's list price, a few cents a month.
+
+**Updates:** `.github/workflows/deploy.yml` deploys only the first
+mailbox. Deploy the second with `CONFIG=deploy-zweit.env scripts/deploy.sh`
+after pulling. It needs a clean tree on the commit to deploy.
+
 ## Security model
 
 **Assets:**
@@ -248,7 +306,7 @@ billing account and monthly (checked against Google's pricing pages on
 |---|---|---|
 | Cloud Run, request-based billing | 180,000 vCPU-s, 360,000 GiB-s, 2 M requests; priced at Tier 1 rates (europe-west1 is Tier 1) | idle costs nothing; each tool call is billed for its duration (a few seconds, mostly IMAP round trips), so even 1,000 calls a month use under 5 % of the free tier |
 | Artifact Registry | 0.5 GB storage; same-region pulls are free | 2 images of about 12 MB compressed each |
-| Secret Manager | 6 active versions, 10,000 accesses | 4 versions; 4 accesses per instance start |
+| Secret Manager | 6 active versions, 10,000 accesses | 4 versions; 4 accesses per instance start (8 versions with a second mailbox) |
 | Cloud Logging | 50 GiB ingestion | a few KB per day |
 
 **Budgets notify; they do not cap spending.** Create an alert at a small
