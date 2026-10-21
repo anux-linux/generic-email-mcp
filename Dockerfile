@@ -6,7 +6,7 @@
 # together (docs/DECISIONS.md D36). The build stage runs on the build host's
 # platform and cross-compiles, so building on arm64 needs no emulation.
 
-FROM --platform=$BUILDPLATFORM golang:1.27.3-trixie@sha256:1896654cfc5c2b5ad74c07f29cb36f5d2d1cbed42e3054070fbfe444e521e83c AS build
+FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.27.3-trixie@sha256:1896654cfc5c2b5ad74c07f29cb36f5d2d1cbed42e3054070fbfe444e521e83c AS build
 ARG TARGETOS TARGETARCH
 ARG VERSION=dev
 WORKDIR /src
