@@ -7,9 +7,9 @@ free tier. There is no web UI: one mailbox, one owner, one OAuth client
 
 > **Status: all five phases built** (mail core, MCP tools, HTTP + OAuth, test
 > hardening, packaging), plus keyless automatic deploys from GitHub. The
-> deploy scripts have been validated locally with fakes and against gcloud
-> 570.0.0 and 590.0.0 offline, but never run against a real project. The
-> first real deploy, the first automatic deploy and the checks in
+> first real deploy (2026-10-21) brought the service up and showed that
+> Cloud Run reserves `/healthz`. The health endpoint is now `/health`
+> (VERIFY H11, H13). The first automatic deploy and the checks in
 > `docs/INSPECTOR.md` Parts B and C are still open (`docs/VERIFY.md`).
 
 - [Setup](#setup)
@@ -28,7 +28,8 @@ free tier. There is no web UI: one mailbox, one owner, one OAuth client
 
 - a Google Cloud project with billing enabled;
 - the gcloud CLI (validated with 570.0.0 and 590.0.0);
-- Docker with BuildKit (Docker ≥ 23);
+- Docker with BuildKit (Docker ≥ 23), or Podman with `CONTAINER_CLI=podman`
+  (`deploy.sh` uses docker when it is installed, otherwise podman);
 - Go 1.27.3, only for hashing the owner password;
 - git, curl, jq and bash (3.2 or later; macOS's default works).
 
@@ -74,7 +75,7 @@ What each script does:
 | `gcp-bootstrap.sh` | Enables `run`, `artifactregistry`, `secretmanager` and `iam`. Creates the service account `RUNTIME_SA_NAME` with no roles. |
 | `gcp-registry.sh` | Creates the Docker repository with immutable tags and applies `deploy/cleanup-policy.json` (keep the 2 newest, delete the rest, enforced rather than dry-run). |
 | `gcp-secrets.sh` | Creates each secret in `REGION` (user-managed replication), adds a version from a hidden prompt or stdin, and grants `roles/secretmanager.secretAccessor` on that one secret to the runtime account. |
-| `deploy.sh` | Builds a linux/amd64 image tagged with the git commit and refuses a dirty tree unless `ALLOW_DIRTY=1`. Pushes it, then deploys it by digest with every flag, variable and secret set explicitly. Secrets are pinned to the newest enabled version number. Finally it checks `/healthz`, the metadata and the 401 challenge. |
+| `deploy.sh` | Builds a linux/amd64 image tagged with the git commit and refuses a dirty tree unless `ALLOW_DIRTY=1`. Pushes it, then deploys it by digest with every flag, variable and secret set explicitly. Secrets are pinned to the newest enabled version number. Finally it checks `/health`, the metadata and the 401 challenge. |
 | `gcp-github.sh` | Sets up keyless deploys from GitHub: an identity pool and provider for GitHub's OIDC tokens, and a deployer service account with rights on this service's resources only (next section). |
 | `ci-deploy.sh` | Runs only in the GitHub deploy job: installs the pinned gcloud, signs in through Workload Identity Federation and runs `deploy.sh` for the existing service. |
 
@@ -204,7 +205,7 @@ connector. Set `BASE_URL` in `deploy.env` only to move deliberately.
 
 | Threat | Controls |
 |---|---|
-| Anyone on the internet calls `/mcp` | A bearer token is required: HS256 JWT with `typ` `at+jwt`, audience = this resource, issuer, epoch, 1 h lifetime. Only `/healthz` and the OAuth metadata are public. |
+| Anyone on the internet calls `/mcp` | A bearer token is required: HS256 JWT with `typ` `at+jwt`, audience = this resource, issuer, epoch, 1 h lifetime. Only `/health` and the OAuth metadata are public. |
 | Anyone tries to obtain tokens | One confidential client (ID + secret), no dynamic registration. Exact redirect URI allowlist (claude.ai's callback). PKCE S256 is mandatory; RFC 8707 resource binding and RFC 9207 `iss` are supported. The owner authenticates on `/authorize` (argon2id hash). Per-IP and global rate limits on `/authorize` and `/token`. |
 | Stolen or replayed refresh token | Rotation on every use. Reusing an old token revokes the whole family, and this is recorded durably in the mailbox, so it survives restarts (D30). `TOKEN_EPOCH` revokes everything. |
 | Prompt injection in an email | Mail content reaches the model only inside a fenced block with a random boundary, and tag look-alikes are neutralized. Hidden HTML and invisible Unicode are removed. Tool descriptions and server instructions forbid following mail content. The model cannot send on its own: see the next row. |
@@ -284,7 +285,7 @@ optionally `WIF_POOL`, `WIF_PROVIDER`, `DEPLOY_SA_NAME`; see
 
 | Variable | Default | Notes |
 |---|---|---|
-| `BASE_URL` | set by `deploy.sh` | `https://<service-host>` without a path. Unset = setup mode (only `/healthz`) |
+| `BASE_URL` | set by `deploy.sh` | `https://<service-host>` without a path. Unset = setup mode (only `/health`) |
 | `PORT` | `8080` | set by Cloud Run |
 | `OAUTH_CLIENT_ID` | — (required) | 8–128 characters of `[A-Za-z0-9._~-]`; you enter it in claude.ai |
 | `OAUTH_CLIENT_SECRET` ★ | — (required) | ≥ 32 characters; you enter it in claude.ai |

@@ -1,5 +1,5 @@
 // Package server assembles the HTTP service: OAuth endpoints, the
-// bearer-protected MCP endpoint and /healthz, with timeouts, body limits,
+// bearer-protected MCP endpoint and /health, with timeouts, body limits,
 // rate limits, security headers and log-safe request logging.
 package server
 
@@ -18,16 +18,18 @@ import (
 
 // Limits.
 const (
-	maxOAuthBody    = 16 << 10
-	maxMCPBody      = 1 << 20
-	maxHeaderBytes  = 16 << 10
-	PathMCP         = "/mcp"
-	PathHealth      = "/healthz"
+	maxOAuthBody   = 16 << 10
+	maxMCPBody     = 1 << 20
+	maxHeaderBytes = 16 << 10
+	PathMCP        = "/mcp"
+	// Not /healthz: Cloud Run reserves some paths ending in "z" and answers
+	// them itself, so they never reach the container (docs/VERIFY.md H13).
+	PathHealth      = "/health"
 	readHeaderLimit = 5 * time.Second
 )
 
 // Deps are the server's collaborators. With BaseURL empty the server runs
-// in setup mode: only /healthz works, everything else returns 503. This
+// in setup mode: only /health works, everything else returns 503. This
 // lets the first deployment start before the service URL is known.
 type Deps struct {
 	BaseURL          string
@@ -43,7 +45,7 @@ func Handler(d Deps) http.Handler {
 		d.Logger = slog.New(slog.DiscardHandler)
 	}
 	mux := http.NewServeMux()
-	mux.Handle(PathHealth, logged(d.Logger, "healthz", http.HandlerFunc(health)))
+	mux.Handle(PathHealth, logged(d.Logger, "health", http.HandlerFunc(health)))
 
 	if d.BaseURL == "" || d.OAuth == nil || d.MCP == nil {
 		mux.Handle("/", logged(d.Logger, "setup", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -153,7 +155,7 @@ func logged(logger *slog.Logger, route string, next http.Handler) http.Handler {
 		} else if rec.status >= 400 && rec.status != http.StatusUnauthorized {
 			level = slog.LevelWarn
 		}
-		if route == "healthz" && rec.status == http.StatusOK {
+		if route == "health" && rec.status == http.StatusOK {
 			level = slog.LevelDebug
 		}
 		logger.LogAttrs(r.Context(), level, "http request",

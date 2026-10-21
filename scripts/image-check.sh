@@ -47,12 +47,12 @@ run() { # run [env...]: starts the container with throwaway settings
 		-e TOKEN_SIGNING_KEY="$KEY" -e AUTHORIZE_PASSWORD_HASH="$HASH" \
 		-e MAIL_USERNAME=user@example.org -e MAIL_PASSWORD=not-a-real-password \
 		"$@" "$TAG" >/dev/null
-	for _ in $(seq 50); do curl -fs -o /dev/null "http://127.0.0.1:$PORT/healthz" && return; sleep 0.1; done
+	for _ in $(seq 50); do curl -fs -o /dev/null "http://127.0.0.1:$PORT/health" && return; sleep 0.1; done
 }
 code() { curl -sS -o /dev/null -w '%{http_code}' "$@"; }
 
 run
-check I6 "setup mode (no BASE_URL): /healthz 200" test "$(code "http://127.0.0.1:$PORT/healthz")" = 200
+check I6 "setup mode (no BASE_URL): /health 200" test "$(code "http://127.0.0.1:$PORT/health")" = 200
 check I7 "setup mode: /mcp 503" test "$(code -X POST "http://127.0.0.1:$PORT/mcp")" = 503
 
 B=http://127.0.0.1:$PORT

@@ -61,7 +61,7 @@ start_server() { # start_server <token epoch>
 			SEND_ALLOWLIST=example.net MAX_SENDS_PER_DAY=2 exec "$W/email-mcp"
 	) >>"$W/server.log" 2>&1 &
 	SERVER_PID=$!
-	for _ in $(seq 100); do curl -fs -o /dev/null "$B/healthz" && return; sleep 0.1; done
+	for _ in $(seq 100); do curl -fs -o /dev/null "$B/health" && return; sleep 0.1; done
 	echo "server did not start" >&2; cat "$W/server.log" >&2; exit 1
 }
 start_server 1

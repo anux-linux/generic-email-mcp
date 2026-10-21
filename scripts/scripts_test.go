@@ -76,11 +76,13 @@ exit 0
 // A download (-o FILE) never delivers the pinned gcloud tarball.
 const fakeCurl = fakePrelude + `url=${!#}
 case $args in
-*" -w "*) printf 401 ;;
+*" -w "*) case $url in
+	*/health) [[ -f $S/unhealthy ]] && printf 404 || printf 200 ;;
+	*) printf 401 ;;
+	esac ;;
 *" -o "*) prev=""
 	for a in "$@"; do [[ $prev == -o ]] && echo "not the pinned tarball" > "$a"; prev=$a; done ;;
 *) case $url in
-	*/healthz) echo ok ;;
 	*/.well-known/oauth-protected-resource/mcp) printf '{"resource":"%s/mcp"}' "${FAKE_RESOURCE_BASE:-${url%%/.well-known/*}}" ;;
 	*) exit 22 ;;
 	esac ;;
@@ -112,7 +114,7 @@ func newSandbox(t *testing.T, config string) *sandbox {
 			t.Fatal(err)
 		}
 	}
-	for name, src := range map[string]string{"gcloud": fakeGcloud, "docker": fakeDocker, "curl": fakeCurl} {
+	for name, src := range map[string]string{"gcloud": fakeGcloud, "docker": fakeDocker, "podman": fakeDocker, "curl": fakeCurl} {
 		if err := os.WriteFile(filepath.Join(bin, name), []byte(src), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -403,6 +405,47 @@ func TestDeployVerifiesTheResource(t *testing.T) {
 	if err == nil || !strings.Contains(out, "does not name "+fakeURL+"/mcp") {
 		t.Fatalf("resource mismatch not detected: %v\n%s", err, out)
 	}
+}
+
+// A non-5xx answer from /health is final: reported at once, not retried
+// for a minute.
+func TestDeployReportsHealthStatus(t *testing.T) {
+	s := newSandbox(t, baseConfig)
+	s.mark("service")
+	s.markValue("baseurl", fakeURL)
+	s.mark("unhealthy")
+	out, err := s.run("", "deploy.sh")
+	if err == nil || !strings.Contains(out, "GET "+fakeURL+"/health answered 404, want 200") {
+		t.Fatalf("health failure not reported: %v\n%s", err, out)
+	}
+	if n := len(s.calls("curl", fakeURL+"/health")); n != 1 {
+		t.Errorf("%d health requests, want 1", n)
+	}
+}
+
+// With CONTAINER_CLI=podman the image is built and pushed by podman,
+// without docker's buildx-only flags.
+func TestDeployWithPodman(t *testing.T) {
+	s := newSandbox(t, baseConfig)
+	s.mark("service")
+	s.markValue("baseurl", fakeURL)
+	s.env = append(s.env, "CONTAINER_CLI=podman")
+	if out, err := s.run("", "deploy.sh"); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	builds := s.calls("podman", "build")
+	if len(builds) != 1 || !containsAll(builds[0], "--platform", "linux/amd64", s.root) ||
+		slices.Contains(builds[0], "--provenance=false") || slices.Contains(builds[0], "--sbom=false") {
+		t.Fatalf("podman build = %q", builds)
+	}
+	if len(s.calls("podman", "push")) != 1 || len(s.calls("docker")) != 0 {
+		t.Errorf("push via podman only: podman %q, docker %q", s.calls("podman", "push"), s.calls("docker"))
+	}
+	deploys := s.calls("gcloud", "run", "deploy")
+	if len(deploys) != 1 {
+		t.Fatalf("%d deploy calls, want 1", len(deploys))
+	}
+	checkDeployCall(t, deploys[0], fakeURL)
 }
 
 func TestDeployNeedsSecretVersions(t *testing.T) {

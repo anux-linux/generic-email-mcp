@@ -344,7 +344,7 @@ Each entry: the choice, and why. Newest phase last. Open questions live in
 ### D22. HTTP service (`internal/server`)
 - Routes: `/.well-known/oauth-protected-resource[/mcp]`,
   `/.well-known/oauth-authorization-server[/mcp]`, `/authorize`, `/token`,
-  `/mcp`, `/healthz`. Everything else 404.
+  `/mcp`, `/health` (originally `/healthz`, D45). Everything else 404.
 - `/mcp`: `http.CrossOriginProtection` → `auth.RequireBearerToken`
   (scope `mail`, `resource_metadata="<BASE_URL>/.well-known/oauth-protected-resource"`)
   → `mcp.NewStreamableHTTPHandler` with **`Stateless: true`** (no
@@ -369,7 +369,7 @@ Each entry: the choice, and why. Newest phase last. Open questions live in
   path or query (authorization codes), headers or IP. Panics → 500, value not
   logged.
 - **Setup mode:** without `BASE_URL` the service starts and serves only
-  `/healthz` (503 elsewhere), so the first Cloud Run deployment can succeed
+  `/health` (503 elsewhere), so the first Cloud Run deployment can succeed
   before its URL is known. All other settings are still validated then.
 
 ### D23. Authorization server (`internal/oauth`)
@@ -607,7 +607,7 @@ Each entry: the choice, and why. Newest phase last. Open questions live in
 
 ### D37. Deploy flow (`scripts/deploy.sh`)
 - Two-step first deploy, as specified: setup mode (no `BASE_URL`; the
-  service starts and serves only `/healthz`) → read the URL → redeploy with
+  service starts and serves only `/health`) → read the URL → redeploy with
   `BASE_URL`. A service left in setup mode is finished the same way.
 - **`BASE_URL` is sticky.** Later deploys reuse the value the service
   already runs with, read from the service spec. The URL form gcloud
@@ -630,7 +630,7 @@ Each entry: the choice, and why. Newest phase last. Open questions live in
 - `PUBLIC_ACCESS=no-invoker-iam-check` is the GA alternative for
   organizations that forbid `allUsers` (H9). The app does all
   authentication in either mode.
-- After deploying it checks `/healthz`, that the metadata names
+- After deploying it checks `/health`, that the metadata names
   `BASE_URL/mcp`, and the 401 on `/mcp`, then prints the connector
   settings.
 
@@ -846,3 +846,32 @@ where they are silent, against the gcloud 590.0.0 source and the
   breakage of the script makes a test fail.
 - The new gcloud command lines, and all earlier ones, were replayed offline
   against the real gcloud 590.0.0 (no network, empty config).
+
+## Phase 6b — first real deploy (2026-10-21)
+
+### D45. Health endpoint `/health`, not `/healthz`
+- Cloud Run reserves paths starting with `/_ah/` and "some paths ending with
+  `z`", and recommends avoiding every path that ends in `z`. On the first
+  deploy, `deploy.sh` polled `/healthz` for a minute. None of those requests
+  reached the container, while a browser's `/health` did (VERIFY H13).
+- The endpoint is now `/health`. Local tests had passed because only
+  Google's front end intercepts the reserved paths.
+  `TestNoCloudRunReservedPaths` now checks every route against both rules.
+- `deploy.sh` now reports the status code of the health check. It retries
+  only while the service may still be starting (no connection, or a 5xx),
+  so a wrong answer fails at once rather than after a minute.
+
+### D46. Podman as an alternative container engine (owner's change)
+- `deploy.sh` builds and pushes with `$CONTAINER_CLI`; without it, docker
+  if installed, else podman. With podman it omits `--provenance=false
+  --sbom=false`, which only docker buildx accepts. Podman then builds a
+  single-platform image without attestations, as the keep-2 cleanup policy
+  expects. Podman reads the registry login that `gcloud auth
+  configure-docker` writes.
+- The Dockerfile names the build image fully (`docker.io/library/golang`),
+  because podman does not resolve short names without a registry
+  configuration. The digest pin is unchanged.
+- `TestDeployWithPodman` checks that the build and push go through podman
+  without the buildx-only flags. `scripts/image-check.sh` and CI still use
+  docker.
+

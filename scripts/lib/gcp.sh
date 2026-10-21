@@ -21,8 +21,12 @@ pick_container_cli() {
 	if [[ -z $CTR ]]; then
 		if command -v docker >/dev/null 2>&1; then CTR=docker; else CTR=podman; fi
 	fi
-	CTR_BUILD_FLAGS=()
-	[[ $(basename "$CTR") == podman ]] || CTR_BUILD_FLAGS=(--provenance=false --sbom=false)
+	# shellcheck disable=SC2034 # used by the sourcing scripts
+	if [[ $(basename "$CTR") == podman ]]; then
+		CTR_BUILD_FLAGS=()
+	else
+		CTR_BUILD_FLAGS=(--provenance=false --sbom=false)
+	fi
 	need "$CTR"
 }
 
