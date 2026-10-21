@@ -676,3 +676,158 @@ Each entry: the choice, and why. Newest phase last. Open questions live in
 - `scripts/image-check.sh` builds the image exactly as deploy does and
   smoke-tests it (12 checks).
 - shellcheck at warning level runs in the gate when installed, and is clean.
+
+## Phase 6 — automatic deploys from GitHub
+
+Checked against Google's and GitHub's documentation on 2026-10-21, and,
+where they are silent, against the gcloud 590.0.0 source and the
+`actions/runner` source (docs/VERIFY.md W1–W10).
+
+### D40. Keyless: Workload Identity Federation with a least-privilege deployer
+- No service account key. Google discourages keys, organizations often
+  forbid creating them, and a key in GitHub secrets would be a permanent
+  credential. The deploy job instead presents its GitHub OIDC token, which
+  Google STS exchanges, and then impersonates the deployer service account
+  `DEPLOY_SA_NAME`. Impersonation rather than direct resource access,
+  because Cloud Run does not support direct access.
+- The provider's attribute condition requires all of:
+  - `repository_id` and `repository_owner_id`: numeric, so they survive
+    renames and cannot be claimed by a new repository with the old name;
+  - `ref == refs/heads/main`;
+  - `environment == production`;
+  - `workflow_ref == OWNER/REPO/.github/workflows/deploy.yml@refs/heads/main`;
+  - `runner_environment == github-hosted`.
+  The workflow path in `workflow_ref` contains the repository name, so
+  after a rename deploys fail closed until `gcp-github.sh` is re-run with
+  the new `CD_REPO`.
+  `google.subject` maps the `sub` claim, which is used only in audit logs.
+  Since 2026-07-15 new repositories get GitHub's immutable `sub` format with
+  IDs (W3); the condition does not depend on that format.
+- `roles/iam.workloadIdentityUser` on the deployer is granted to the
+  principal set `attribute.repository_id/<ID>`, and the condition narrows
+  that further.
+- The deployer has no project role. Each grant is on one resource:
+
+  | Role | On | For |
+  |---|---|---|
+  | `roles/run.developer` | the service | describe and deploy. Google's documented minimum for deploying (W1) |
+  | `roles/iam.serviceAccountUser` | the runtime account | `actAs`, to run revisions as it |
+  | `roles/artifactregistry.writer` | the repository | push, and look up digests. No delete |
+  | `roles/secretmanager.viewer` | each of the four secrets | list version numbers to pin. Never `versions.access` (W8) |
+
+  So the deployer cannot create services, change IAM or public access,
+  read secret values, or touch anything else in the project. What it can
+  do is deploy code that runs as the runtime account and therefore reads
+  the secrets. That is inherent in being able to deploy, and is why
+  pushing to `main` must stay with the owner (README residual risks).
+- The first deploy stays manual (`scripts/deploy.sh` as owner). Creating
+  the service and setting public access need `run.services.create` and
+  `setIamPolicy`, which the deployer deliberately lacks. Resource-level
+  grants also need the service to exist. `gcp-github.sh` refuses until it
+  does.
+
+### D41. Trigger: `workflow_run` after `ci`, newest commit only
+- `deploy.yml` runs on a completed `ci` run whose event is `push` and
+  conclusion `success`. Pull requests (including forks) and the weekly
+  fuzz run never deploy. The deploy happens in a separate workflow, so
+  `ci.yml` keeps no `id-token` permission and no environment.
+- For `workflow_run`, `github.sha` is the tip of the default branch when
+  `ci` finished. The job runs only if that equals the run's `head_sha`. An
+  older commit whose `ci` finished late is skipped, never deployed over a
+  newer one. Deploys share one concurrency group without cancellation: one
+  runs at a time, a rollout is never interrupted, and a newer queued run
+  replaces an older waiting one.
+- `workflow_dispatch` on `main` redeploys the tip of `main` as it is (after
+  rotating a secret or changing `DEPLOY_ENV`). It does not re-check `ci`;
+  use it when `main` is green.
+- The environment's deployment branch policy (`main`) is matched against
+  `GITHUB_REF`, which for `workflow_run` is always the default branch (W7).
+  It is defence in depth; the `if:` conditions and the provider condition
+  do the real gating.
+
+### D42. The privileged job runs first-party code only
+- Every step of a job with `id-token: write` can mint OIDC tokens, so
+  everything that runs there is trusted with deploy rights. The job uses
+  only `actions/checkout` (GitHub's own, by exact tag as in D35) and this
+  repository's scripts. No `google-github-actions/*`.
+- `scripts/ci-deploy.sh` does what `google-github-actions/auth` does, in
+  about 20 lines:
+  - **Credentials file.** It writes the same external-account credential
+    configuration that `gcloud iam workload-identity-pools
+    create-cred-config` produces: URL-sourced, with impersonation. jq
+    builds it from environment variables, so the request token never
+    appears in a process argument. The file is created with `umask 077` in
+    `$RUNNER_TEMP` and deleted on exit. The auth action, by contrast,
+    writes the token into `$GITHUB_WORKSPACE`, where it would also make the
+    tree dirty. Signing in from such a file is documented (W5).
+  - **Clean environment.** It then unsets the request token and
+    `DEPLOY_ENV`, so docker and curl don't inherit them. gcloud gets its
+    own `CLOUDSDK_CONFIG` and `DOCKER_CONFIG` under the work directory.
+- gcloud is pinned by version and SHA-256: 590.0.0 (2026-10-20) from
+  Google's versioned archive in Cloud Storage. Google publishes a SHA-256
+  only for the current unversioned file. On 2026-10-21 that file
+  (`351ed4a2…`, matching the published value) contained a byte-identical
+  tar, and the versioned file's MD5 matches the Cloud Storage object's
+  (W6). Download (94 MB) and unpacking take seconds on GitHub's runners.
+  `setup-gcloud` does no checksum verification, and the runner's
+  preinstalled gcloud changes weekly.
+- To update gcloud, change `GCLOUD_VERSION` and `GCLOUD_SHA256` together,
+  cross-checked the same way, and replay the recorded calls (D44).
+
+### D43. Configuration and the public log
+- The repository is public, and so are its Actions logs. `deploy.env`
+  contains no secrets, but it does contain the owner's address, the
+  allowlist, the client ID and possibly the login name. So it reaches the
+  job as the environment secret `DEPLOY_ENV`, which is encrypted, available
+  only to jobs in `production`, and masked line by line. It goes through
+  the same strict parser as a local `deploy.env`, so a secret pasted into
+  it by mistake stops the deploy.
+- In addition, under GitHub Actions `load_config` registers
+  `::add-mask::` for each personal value and each allowlist entry before
+  anything is printed. `deploy.sh` does the same for every URL of the
+  service. Masks are written to stderr like all messages, so they precede
+  any line containing the value in the same stream. The runner processes
+  workflow commands on both streams (W4).
+- Deliberately not masked: project ID and number, region, service, image
+  and secret names. These are identifiers, not credentials. The security
+  model does not rely on hiding the URL either, but there is no reason to
+  publish it.
+- The workflow variables `GCP_WIF_PROVIDER` and `GCP_DEPLOY_SA` are plain
+  identifiers. `ci-deploy.sh` validates their format and that the account
+  is the `DEPLOY_SA_NAME` of `PROJECT_ID` from `DEPLOY_ENV`, so the two
+  cannot silently diverge.
+
+### D44. `UPDATE_ONLY` and how this is tested
+- `deploy.sh` with `UPDATE_ONLY=1` (set by `ci-deploy.sh`):
+  - **Existing service only.** It skips the project-wide service listing,
+    because describe fails clearly if the service is missing.
+  - **Public access untouched.** It omits the access flag, which would
+    change IAM. gcloud keeps the existing `allUsers` binding or invoker
+    setting when the flag is absent (W9).
+  - **Everything else unchanged:** image by digest, all flags, environment,
+    pinned secrets and post-deploy checks.
+- Branch `main`, environment `production` and `deploy.yml` are constants
+  in `gcp-github.sh` and in the workflow, not settings. A test checks that
+  the two agree.
+- `scripts/scripts_test.go` gained 11 tests (28 in all), covering:
+  - **`gcp-github.sh`:** the exact condition, mapping and issuer; exactly
+    the 8 resource-level grants and no project role; updating an existing
+    provider; refusing deleted pools or providers, a missing service,
+    missing secrets or missing repository IDs.
+  - **`UPDATE_ONLY`:** no listing and no access flag.
+  - **Masking:** every personal value and URL is masked before its first
+    printed use, and nothing is masked outside Actions.
+  - **`ci-deploy.sh`:**
+    - the credential file's content and its 0600 mode;
+    - the request token never appears in argv;
+    - sign-in comes before any other gcloud call;
+    - the work directory is removed;
+    - a checksum mismatch is refused before any gcloud call;
+    - refusal outside Actions, without `id-token`, with a bad provider, a
+      foreign account or a secret in `DEPLOY_ENV`.
+  - **Workflow and condition agree,** and the deploy job uses no
+    third-party action.
+- Each of those properties was mutation-checked: every deliberate
+  breakage of the script makes a test fail.
+- The new gcloud command lines, and all earlier ones, were replayed offline
+  against the real gcloud 590.0.0 (no network, empty config).

@@ -14,8 +14,10 @@ say() { printf '==> %s\n' "$*" >&2; }
 in_list() { local x=$1 e; shift; for e in "$@"; do [[ $e == "$x" ]] && return 0; done; return 1; }
 need() { local c; for c in "$@"; do command -v "$c" >/dev/null 2>&1 || die "$c is required"; done; }
 
-# Deployment settings, not passed to the service.
-DEPLOY_KEYS=(PROJECT_ID REGION SERVICE REPOSITORY RUNTIME_SA_NAME PUBLIC_ACCESS)
+# Deployment settings, not passed to the service. The CD_*, WIF_* and
+# DEPLOY_SA_NAME keys are only for scripts/gcp-github.sh.
+DEPLOY_KEYS=(PROJECT_ID REGION SERVICE REPOSITORY RUNTIME_SA_NAME PUBLIC_ACCESS
+	CD_REPO CD_REPO_ID CD_OWNER_ID WIF_POOL WIF_PROVIDER DEPLOY_SA_NAME)
 # Service settings, passed to Cloud Run as plain environment variables when set.
 APP_KEYS=(MAIL_USERNAME MAIL_FROM MAIL_FROM_NAME MAIL_IMAP_ADDR MAIL_SMTP_ADDR MAIL_SMTP_HELO MAIL_SAVE_SENT
 	MAIL_MAX_BODY_BYTES MAIL_FOLDER_SENT MAIL_FOLDER_DRAFTS MAIL_FOLDER_TRASH MAIL_FOLDER_ARCHIVE
@@ -24,6 +26,18 @@ APP_KEYS=(MAIL_USERNAME MAIL_FROM MAIL_FROM_NAME MAIL_IMAP_ADDR MAIL_SMTP_ADDR M
 	TRUSTED_PROXY_HOPS BASE_URL)
 # Secrets: environment variable -> Secret Manager secret "<SERVICE>-<name>".
 SECRET_KEYS=(MAIL_PASSWORD TOKEN_SIGNING_KEY OAUTH_CLIENT_SECRET AUTHORIZE_PASSWORD_HASH)
+
+# Values that identify the owner. In GitHub Actions they are masked in the
+# public log as soon as the configuration is loaded (see mask).
+PERSONAL_KEYS=(MAIL_USERNAME MAIL_FROM MAIL_FROM_NAME SEND_ALLOWLIST OAUTH_CLIENT_ID AUTHORIZE_USERNAME)
+
+# mask <value>: in GitHub Actions, tells the runner to print *** instead of
+# the value from now on. Workflow commands go to stderr, like every other
+# message here, so the mask precedes any line that contains the value.
+mask() {
+	[[ ${GITHUB_ACTIONS:-} == true && -n $1 ]] || return 0
+	printf '::add-mask::%s\n' "$1" >&2
+}
 
 # load_config parses $CONFIG as KEY=value lines (optionally quoted). It is
 # never executed as shell code; unknown keys and secrets are rejected.
@@ -45,6 +59,18 @@ load_config() {
 		[[ $val != *'|'* ]] || die "$CONFIG:$n: values must not contain '|'"
 		printf -v "$key" '%s' "$val"
 	done <"$CONFIG"
+	local item rest
+	for key in "${PERSONAL_KEYS[@]}"; do
+		mask "${!key-}"
+	done
+	# Each allowlist entry on its own, which covers the whole list too.
+	rest=${SEND_ALLOWLIST-}
+	while [[ -n $rest ]]; do
+		item=${rest%%,*}
+		item=${item#"${item%%[![:space:]]*}"}
+		mask "${item%"${item##*[![:space:]]}"}"
+		if [[ $rest == *,* ]]; then rest=${rest#*,}; else rest=""; fi
+	done
 
 	: "${PROJECT_ID:?set PROJECT_ID in $CONFIG}"
 	: "${MAIL_USERNAME:?set MAIL_USERNAME in $CONFIG}"
@@ -61,11 +87,39 @@ load_config() {
 	[[ $RUNTIME_SA_NAME =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]] || die "RUNTIME_SA_NAME $RUNTIME_SA_NAME is not a valid account ID"
 	[[ $PUBLIC_ACCESS == allow-unauthenticated || $PUBLIC_ACCESS == no-invoker-iam-check ]] ||
 		die "PUBLIC_ACCESS must be allow-unauthenticated or no-invoker-iam-check"
+	WIF_POOL=${WIF_POOL:-github}
+	WIF_PROVIDER=${WIF_PROVIDER:-email-mcp}
+	DEPLOY_SA_NAME=${DEPLOY_SA_NAME:-email-mcp-deploy}
+	[[ -z ${CD_REPO:-} || $CD_REPO =~ ^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$ ]] || die "CD_REPO must be OWNER/REPOSITORY"
+	[[ -z ${CD_REPO_ID:-} || $CD_REPO_ID =~ ^[1-9][0-9]{0,19}$ ]] || die "CD_REPO_ID must be the numeric repository ID"
+	[[ -z ${CD_OWNER_ID:-} || $CD_OWNER_ID =~ ^[1-9][0-9]{0,19}$ ]] || die "CD_OWNER_ID must be the numeric owner ID"
+	local id
+	for id in "$WIF_POOL" "$WIF_PROVIDER"; do
+		[[ $id =~ ^[a-z0-9-]{4,32}$ && $id != gcp-* ]] ||
+			die "WIF_POOL/WIF_PROVIDER $id: 4-32 characters of a-z 0-9 -, not starting with gcp-"
+	done
+	[[ $DEPLOY_SA_NAME =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]] || die "DEPLOY_SA_NAME $DEPLOY_SA_NAME is not a valid account ID"
+	[[ $DEPLOY_SA_NAME != "$RUNTIME_SA_NAME" ]] || die "DEPLOY_SA_NAME must differ from RUNTIME_SA_NAME"
 	[[ $OAUTH_CLIENT_ID =~ ^[A-Za-z0-9._~-]{8,128}$ ]] || die "OAUTH_CLIENT_ID must be 8-128 characters of A-Z a-z 0-9 . _ ~ -"
 	# shellcheck disable=SC2034 # used by the sourcing scripts
 	SA_EMAIL=$RUNTIME_SA_NAME@$PROJECT_ID.iam.gserviceaccount.com
 	# shellcheck disable=SC2034
+	DEPLOY_SA_EMAIL=$DEPLOY_SA_NAME@$PROJECT_ID.iam.gserviceaccount.com
+	# shellcheck disable=SC2034
 	IMAGE=$REGION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/$SERVICE
+}
+
+# access_flag prints the gcloud flag that makes the service reachable from
+# the internet. allow-unauthenticated grants roles/run.invoker to allUsers;
+# organizations with domain restricted sharing forbid that, so the
+# alternative disables the invoker check instead. Either way the app does
+# all authentication.
+access_flag() {
+	if [[ $PUBLIC_ACCESS == no-invoker-iam-check ]]; then
+		printf '%s' --no-invoker-iam-check
+	else
+		printf '%s' --allow-unauthenticated
+	fi
 }
 
 # secret_id MAIL_PASSWORD -> email-mcp-mail-password
