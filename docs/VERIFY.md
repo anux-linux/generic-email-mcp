@@ -4,27 +4,35 @@ Every assumption that could not be confirmed from source code or tests.
 Status: **open** (unconfirmed), **resolved** (confirmed, with how), or
 **mitigated** (still unconfirmed, but the code handles both outcomes).
 
-## Strato (needs a real account — not testable here)
+## Strato
 
-None of these can be confirmed without credentials; tests never touch a real
-mailbox. Suggested manual checks are read-only. `docs/INSPECTOR.md` Part B
-checks most of them in one session against the deployed service (its last
-column names the items).
+Tests never touch a real mailbox. These items were checked on 2026-10-21 in
+an owner-approved session against the deployed service and the real Strato
+mailbox, through the claude.ai connector, covering the steps of
+`docs/INSPECTOR.md` Part B. That session made these changes to the mailbox:
+- created and sent one draft, with the owner's approval, to the account
+  itself;
+- moved the two copies of that mail, from Sent Items and INBOX, to Trash;
+- set one message that was already unread to unread again, which changed
+  nothing.
+
+No mail content is recorded here. "Owner" marks items settled by the
+owner's own observation or decision.
 
 | # | Assumption | Status | How to check / impact |
 |---|---|---|---|
-| S1 | IMAP is `imap.strato.de:993`, implicit TLS | open | `openssl s_client -connect imap.strato.de:993 -quiet` then `a CAPABILITY`, `a LOGOUT`. Override: `MAIL_IMAP_ADDR`. |
-| S2 | SMTP is `smtp.strato.de:465`, implicit TLS, offers `AUTH PLAIN` | open | `openssl s_client -connect smtp.strato.de:465 -quiet`, `EHLO [127.0.0.1]`, read the `AUTH` line, `QUIT`. Override: `MAIL_SMTP_ADDR`. |
-| S3 | Login name is the full e-mail address (IMAP and SMTP) | open | First real login. |
-| S4 | Server capabilities include `MOVE`, `UIDPLUS`, `SPECIAL-USE`, `LIST-EXTENDED`, `LIST-STATUS` | mitigated | Without MOVE, move/delete is refused (by design, D8). Without UIDPLUS the draft UID is found via Message-ID search (tested). Without SPECIAL-USE/LIST-STATUS: name heuristics and STATUS fallback (tested). |
-| S5 | Folder names / SPECIAL-USE flags (likely `Sent`/`Drafts`/`Trash` or German names, possibly `INBOX.`-prefixed) | mitigated | Both layouts are handled; set `MAIL_FOLDER_SENT/DRAFTS/TRASH/ARCHIVE` if discovery picks wrong. Check with `a LIST "" "*" RETURN (SPECIAL-USE)` after login. |
-| S6 | Strato does **not** auto-save submitted mail to Sent | open | If it does, set `MAIL_SAVE_SENT=false` to avoid duplicates. |
-| S7 | Strato stores APPENDed drafts byte-exact (the draft HMAC covers the bytes) | mitigated | CRLF/LF and trailing newlines are normalized. If Strato rewrites headers, sending fails safe with `ErrDraftInvalid`, never sends a modified draft. |
-| S8 | SMTP accepts EHLO `[127.0.0.1]` from authenticated clients | open | Override with `MAIL_SMTP_HELO`. |
-| S9 | Strato SMTP sending limits (per-hour/day, recipients per message) | open | Unknown; keep `MAX_SENDS_PER_DAY` (Phase 2, default 20) below it. Recipients per message are capped at 50 here. |
-| S10 | Non-ASCII search works (`SEARCH CHARSET UTF-8`) | open | go-imap adds `CHARSET UTF-8` automatically for non-ASCII terms on IMAP4rev1 (source, resolved); server support unknown. |
-| S11 | Strato requires `From` = authenticated address | mitigated | The code always uses the account address (`MAIL_FROM` defaults to the username). |
-| S12 | Connection limits / rate limits on IMAP logins (one login per tool call) | open | Watch for `[LIMIT]`/`[UNAVAILABLE]` errors under bursty use. |
+| S1 | IMAP is `imap.strato.de:993`, implicit TLS | **resolved** (live, 2026-10-21) | Every tool call worked against the live mailbox (folder list, search, read, flags, move). |
+| S2 | SMTP is `smtp.strato.de:465`, implicit TLS, offers `AUTH PLAIN` | **resolved** (live, 2026-10-21) | Two sends were delivered: one from claude.ai to an external address, and one verification mail to the account itself, which arrived in INBOX. |
+| S3 | Login name is the full e-mail address (IMAP and SMTP) | **resolved** (live, 2026-10-21) | `MAIL_USERNAME` is the full address; IMAP and SMTP logins both succeed. |
+| S4 | Server capabilities include `MOVE`, `UIDPLUS`, `SPECIAL-USE`, `LIST-EXTENDED`, `LIST-STATUS` | **resolved** for `MOVE` and `UIDPLUS` (live, 2026-10-21); the rest mitigated | The server moves only with MOVE (D8). Moves worked: the sent draft went to Trash, and two test copies were moved by `mail_move`. `mail_move` returned new IDs, which come from COPYUID data (UIDPLUS). Whether roles came from SPECIAL-USE or from the name heuristics was not recorded; both give the same result here (S5). |
+| S5 | Folder names / SPECIAL-USE flags (likely `Sent`/`Drafts`/`Trash` or German names, possibly `INBOX.`-prefixed) | **resolved** (live, 2026-10-21) | Top-level `INBOX`, `Drafts`, `Sent Items`, `Trash`, `Archive`, `Spam`. All six roles were discovered without any `MAIL_FOLDER_*` override. No `INBOX.` prefix. |
+| S6 | Strato does **not** auto-save submitted mail to Sent | **resolved** (live, 2026-10-21) | Each send left exactly one copy in `Sent Items` (38 → 39 for the verification mail). The default `MAIL_SAVE_SENT=true` is right. |
+| S7 | Strato stores APPENDed drafts byte-exact (the draft HMAC covers the bytes) | **resolved** (live, 2026-10-21) | A draft created through the server was sent. Sending re-reads the draft and checks its HMAC over the stored bytes, so Strato kept them unchanged after normalization. The draft was then in Trash, and `Drafts` was empty. |
+| S8 | SMTP accepts EHLO `[127.0.0.1]` from authenticated clients | **resolved** (live, 2026-10-21) | Both sends used the default HELO. |
+| S9 | Strato SMTP sending limits (per-hour/day, recipients per message) | **closed** (owner, 2026-10-21) | The owner confirms Strato's limits are far above `MAX_SENDS_PER_DAY=20`. Recipients per message are capped at 50 here. |
+| S10 | Non-ASCII search works (`SEARCH CHARSET UTF-8`) | **resolved** (live, 2026-10-21) | A subject search for `verlängert` returned 26 matches, the newest of them with that word in the subject. |
+| S11 | Strato requires `From` = authenticated address | **resolved** (live, 2026-10-21) | From is always the account address, and Strato accepted both sends. Whether Strato would reject another From was not tested; the server never sends one. |
+| S12 | Connection limits / rate limits on IMAP logins (one login per tool call) | **closed** (owner, 2026-10-21) | The owner confirms Strato's limits are far above this usage. No `[LIMIT]`/`[UNAVAILABLE]` errors appeared in a session of 14 consecutive tool calls. |
 
 ## go-imap v2.0.0-beta.8 (pre-release)
 
@@ -37,7 +45,7 @@ column names the items).
 | G5 | `imapmemserver` cannot store SPECIAL-USE attributes | **resolved** | Field is never assigned in source; test fixture wraps `List`. |
 | G6 | `imapmemserver` sets `\Seen` on non-PEEK fetch even under EXAMINE | **resolved** | Source `imapmemserver/mailbox.go`; makes the no-seen test meaningful. |
 | G7 | `imapmemserver` always sends APPENDUID | **resolved** | Source `imapserver/append.go`; fixture can suppress it to test the fallback. |
-| G8 | Behaviour against a real Dovecot server matches the memserver | open | Only testable against a real server (S4/S5). The beta API may change before v2.0.0; the version is pinned. |
+| G8 | Behaviour against a real Dovecot server matches the memserver | **resolved** for the operations used (live, 2026-10-21) | List, search (ASCII and UTF-8), read (EXAMINE + PEEK: reading left the message unread), STORE flags, APPEND, MOVE with COPYUID, and sending with the ledger all behaved as against the memserver. The pin stays (beta API). |
 
 ## MCP Go SDK v1.8.0
 
@@ -52,15 +60,15 @@ column names the items).
 
 | # | Assumption | Status | How to check / fallback |
 |---|---|---|---|
-| C1 | The OAuth popup shows the browser's HTTP Basic dialog for `/authorize` | open | Connect once. If no dialog appears or the flow stalls, set `AUTHORIZE_LOGIN=form` (single-field HTML form with CSRF protection, D26) and redeploy. Also check the Claude mobile apps if used there. |
-| C2 | claude.ai uses the refresh token and stores the rotated one | open | Leave the connector idle > 1 h, then use a tool: must work without re-login. Logs show `grant_type: refresh_token`. |
-| C3 | Discovery paths claude.ai requests | mitigated | Both plain and `/mcp`-suffixed variants of both well-known documents are served. |
-| C4 | claude.ai asks before calling tools marked `destructiveHint`, and lets the user set `mail_send_draft` to "always ask" | open | |
-| C5 | claude.ai passes tool `content` text to the model | mitigated: only text content is sent |
-| C6 | claude.ai sends `resource` = the configured server URL (RFC 8707) | mitigated | Optional; exact or trailing-slash match accepted; anything else is `invalid_target`. |
-| C7 | claude.ai's token endpoint authentication method | mitigated | Both `client_secret_basic` and `client_secret_post` work. |
-| C8 | claude.ai accepts `application/json` responses from Streamable HTTP | open | Allowed by the spec; if not, set `JSONResponse: false` (one line in `internal/server`). |
-| C9 | claude.ai calls `/token` and `/mcp` server-to-server (no `Sec-Fetch-Site: cross-site`), so cross-origin protection does not block it | open | Symptom would be 403 on `/mcp`. |
+| C1 | The OAuth popup shows the browser's HTTP Basic dialog for `/authorize` | **resolved** (owner, 2026-10-21) | The owner connected the claude.ai connector with `AUTHORIZE_LOGIN=basic`. The form fallback was not needed. The Claude mobile apps were not tested. |
+| C2 | claude.ai uses the refresh token and stores the rotated one | **resolved** (owner, 2026-10-21) | After about an hour without interaction, longer than the 1 h access-token lifetime, the tools worked again without a new login. `MCP-Auth-State` holds the durable token-family journal. |
+| C3 | Discovery paths claude.ai requests | **resolved: works** (2026-10-21) | Discovery succeeded. Both variants stay served; which one claude.ai used was not recorded. |
+| C4 | claude.ai asks before calling tools marked `destructiveHint`, and lets the user set `mail_send_draft` to "always ask" | **resolved** (owner, 2026-10-21) | Approval was asked before sending. |
+| C5 | claude.ai passes tool `content` text to the model | **resolved: works** (2026-10-21) | Tool results reach the model with the fenced `untrusted_email_content` blocks intact. |
+| C6 | claude.ai sends `resource` = the configured server URL (RFC 8707) | **resolved: works** (2026-10-21) | Token issuance succeeded. Anything other than an exact or trailing-slash match would have been `invalid_target`. |
+| C7 | claude.ai's token endpoint authentication method | **resolved: works** (2026-10-21) | Login and refresh succeeded. Which of the two methods claude.ai used was not recorded; both stay supported. |
+| C8 | claude.ai accepts `application/json` responses from Streamable HTTP | **resolved** (2026-10-21) | All seven tools were called successfully through the connector. |
+| C9 | claude.ai calls `/token` and `/mcp` server-to-server (no `Sec-Fetch-Site: cross-site`), so cross-origin protection does not block it | **resolved** (2026-10-21) | No 403. The token exchange and every tool call succeeded. |
 
 ## Cloud Run and Google Cloud
 
@@ -131,7 +139,7 @@ here has run against a real project or a real GitHub runner yet.
 | # | Assumption | Status |
 |---|---|---|
 | A1 | Refresh-token reuse detection must survive restarts | **resolved** — durable journal in the mailbox (D30); tested across simulated restarts against the IMAP test server |
-| A2 | Strato allows creating `MCP-Auth-State` at top level | open — like P2; on failure `/token` answers 503; set `AUTH_STATE_FOLDER` (e.g. `INBOX.MCP-Auth-State`) |
+| A2 | Strato allows creating `MCP-Auth-State` at top level | **resolved** (live, 2026-10-21) — created on the first login, now holding 2 journal entries |
 
 ## Dependencies
 
@@ -146,5 +154,5 @@ here has run against a real project or a real GitHub runner yet.
 | # | Assumption | Status |
 |---|---|---|
 | P1 | The daily send cap must survive restarts | **resolved** — durable IMAP ledger (D21); tested across simulated restarts |
-| P2 | Strato allows creating the top-level folder `MCP-Send-Ledger` (Courier-style servers may require an `INBOX.` prefix) | open — on failure sends are refused; set `SEND_LEDGER_FOLDER` (e.g. `INBOX.MCP-Send-Ledger`) |
-| P3 | Strato honours `SEARCH HEADER <field> ""` as "field present" (RFC 3501) | mitigated — if not, the read-back check refuses every send (fail closed) instead of disabling the cap; `SEND_LEDGER=memory` would then be the fallback |
+| P2 | Strato allows creating the top-level folder `MCP-Send-Ledger` (Courier-style servers may require an `INBOX.` prefix) | **resolved** (live, 2026-10-21) — created on the first send; one entry per send (2 after two sends) |
+| P3 | Strato honours `SEARCH HEADER <field> ""` as "field present" (RFC 3501) | **resolved** (live, 2026-10-21) — the ledger read-back counted both sends (`sends_remaining_24h: 18` with a cap of 20) |
