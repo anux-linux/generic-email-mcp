@@ -155,7 +155,7 @@ No test or check here contacts Google Cloud or GitHub's OIDC service.
 |---|---|
 | Keyless trust limited to this repository, `deploy.yml`, `main`, `production` and GitHub-hosted runners | `scripts.TestGitHubSetup` (exact attribute condition, mapping, issuer, principal set by repository ID), `…UpdatesProvider` (a re-run updates the condition in place) |
 | Deployer has least privilege | `scripts.TestGitHubSetup`: exactly 8 grants, each on one resource (service, runtime account, repository, four secrets), and no project role |
-| Setup refuses unsafe or incomplete states | `scripts.TestGitHubSetupRefuses`: no service yet, missing secrets, no repository IDs, deleted pool or provider. In each case no provider or binding is changed |
+| Setup refuses unsafe or incomplete states | `scripts.TestGitHubSetupRefuses`: no service yet, missing secrets, no repository IDs, deleted pool or provider, a pool shared with another provider, a pool whose providers cannot be listed. In each case no provider or binding is changed |
 | CI only updates and never changes public access | `scripts.TestDeployUpdateOnly`, `…UpdateOnlyNeedsService` |
 | Nothing personal in the public log | `scripts.TestDeployMasksPersonalValuesInGitHubActions` (address, client ID, allowlist and its entries, service URLs are masked before their first use), `…DoesNotMaskOutsideGitHubActions` |
 | Credentials handled safely in the job | `scripts.TestCIDeploy`: exact external-account file, mode 0600, request token never in argv, sign-in before any other gcloud call, work directory removed, `UPDATE_ONLY` deploy |

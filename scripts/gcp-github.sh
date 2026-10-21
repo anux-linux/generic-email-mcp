@@ -7,8 +7,13 @@
 #   scripts/gcp-github.sh
 #
 # It sets up:
-# - the pool WIF_POOL with the OIDC provider WIF_PROVIDER for GitHub. The
-#   provider accepts a GitHub token only if every one of these claims
+# - the pool WIF_POOL, used for nothing else, with the OIDC provider
+#   WIF_PROVIDER for GitHub as its only provider. All providers of a pool
+#   map into the same principals, so the grant below to
+#   attribute.repository_id would admit this repository's tokens through
+#   any other provider of the pool, whatever its condition. Google's best
+#   practice is one provider per pool; the script refuses a pool holding
+#   any other provider. The provider accepts a GitHub token only if every one of these claims
 #   matches: repository ID and owner ID (immune to renames and to a
 #   re-created repository of the same name), ref refs/heads/main,
 #   environment production, the workflow file deploy.yml on main, and a
@@ -71,10 +76,20 @@ provider=$pool/providers/$WIF_PROVIDER
 state() { gc "$@" --format='value(state)' 2>/dev/null || true; }
 
 case $(state iam workload-identity-pools describe "$WIF_POOL" --location=global) in
-"") mut iam workload-identity-pools create "$WIF_POOL" --location=global --display-name="GitHub Actions" ;;
+"") mut iam workload-identity-pools create "$WIF_POOL" --location=global --display-name="email-mcp GitHub deploys" ;;
 ACTIVE) say "pool $WIF_POOL exists" ;;
 *) die "pool $WIF_POOL is deleted; restore it: gcloud iam workload-identity-pools undelete $WIF_POOL --location=global" ;;
 esac
+
+# The pool must hold no provider but ours (see above). A failing list stops
+# the script rather than skipping the check.
+listed=$(gc iam workload-identity-pools providers list --workload-identity-pool="$WIF_POOL" --location=global \
+	--format='value(name.basename())') || die "cannot list the providers of pool $WIF_POOL"
+others=""
+for p in $listed; do
+	[[ $p == "$WIF_PROVIDER" ]] || others+=${others:+, }$p
+done
+[[ -z $others ]] || die "pool $WIF_POOL also holds the provider(s) $others, whose tokens would map to the same principals; set WIF_POOL to a pool used only for this service"
 
 oidc=(--workload-identity-pool="$WIF_POOL" --location=global --issuer-uri="$ISSUER"
 	--attribute-mapping="$mapping" --attribute-condition="$condition")

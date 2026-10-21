@@ -87,8 +87,8 @@ load_config() {
 	[[ $RUNTIME_SA_NAME =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]] || die "RUNTIME_SA_NAME $RUNTIME_SA_NAME is not a valid account ID"
 	[[ $PUBLIC_ACCESS == allow-unauthenticated || $PUBLIC_ACCESS == no-invoker-iam-check ]] ||
 		die "PUBLIC_ACCESS must be allow-unauthenticated or no-invoker-iam-check"
-	WIF_POOL=${WIF_POOL:-github}
-	WIF_PROVIDER=${WIF_PROVIDER:-email-mcp}
+	WIF_POOL=${WIF_POOL:-email-mcp}
+	WIF_PROVIDER=${WIF_PROVIDER:-github}
 	DEPLOY_SA_NAME=${DEPLOY_SA_NAME:-email-mcp-deploy}
 	[[ -z ${CD_REPO:-} || $CD_REPO =~ ^[A-Za-z0-9-]{1,39}/[A-Za-z0-9._-]{1,100}$ ]] || die "CD_REPO must be OWNER/REPOSITORY"
 	[[ -z ${CD_REPO_ID:-} || $CD_REPO_ID =~ ^[1-9][0-9]{0,19}$ ]] || die "CD_REPO_ID must be the numeric repository ID"

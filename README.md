@@ -111,9 +111,13 @@ one-hour token of a deployer service account.
    CD_OWNER_ID=838468
    ```
 
-2. Run `scripts/gcp-github.sh`. It creates the pool `github`, the provider
-   `email-mcp` and the service account `email-mcp-deploy`, grants the roles
-   below and prints the values for step 3.
+2. Run `scripts/gcp-github.sh`. It creates the identity pool `email-mcp`
+   with `github` as its only provider, and the service account
+   `email-mcp-deploy`. It grants the roles below and prints the values for
+   step 3. Keep that pool for this service only: the script refuses a pool
+   that holds any other provider, because a provider with a looser
+   condition there would also let this repository's tokens act as the
+   deployer.
 3. In GitHub, open **Settings → Environments → New environment** and name
    it `production`:
    - **Deployment branches and tags:** Selected branches and tags → `main`.
@@ -139,7 +143,7 @@ one-hour token of a deployer service account.
 |---|---|
 | Trigger | A successful `ci` run for a push to `main`, and only if that commit is still the tip of `main`; or **Actions → deploy → Run workflow** on `main`. Never a pull request. Deploys run one at a time and are never cancelled half-way. |
 | Code in the job | Only first-party code: `actions/checkout` and this repository's scripts. `ci-deploy.sh` installs gcloud 590.0.0 from Google's archive and refuses it unless its SHA-256 matches. |
-| Token exchange | The provider accepts a GitHub token only when the repository and owner IDs, `ref` (`refs/heads/main`), environment (`production`), workflow (`deploy.yml` on `main`) and runner type (GitHub-hosted) all match. |
+| Token exchange | The provider accepts a GitHub token only when the repository and owner IDs, `ref` (`refs/heads/main`), environment (`production`), workflow (`deploy.yml` on `main`) and runner type (GitHub-hosted) all match. It is the only provider in its pool. |
 | Deployer account | No project role. `run.developer` on the service, `serviceAccountUser` on the runtime account, `artifactregistry.writer` on the repository, and `secretmanager.viewer` on the four secrets, which shows version numbers but never values. It cannot create services, change IAM or public access, or delete images. |
 | Public log | Your address, allowlist, client ID, login name and the service URLs are masked. |
 
@@ -175,9 +179,9 @@ and C.
 | Rotate a secret | `scripts/gcp-secrets.sh <NAME>`, then **Run workflow** or `scripts/deploy.sh`. Versions are pinned, so the new one is used from that deploy on. Once it serves, destroy the old version (`gcloud secrets versions destroy N --secret=…`): Secret Manager bills active versions above 6. |
 | Revoke every token | Increase `TOKEN_EPOCH` in `deploy.env`, then deploy as for a configuration change. claude.ai asks you to log in again. |
 | Roll back | `gcloud run services update-traffic SERVICE --region=REGION --to-revisions=REVISION=100`. Only to a revision whose image is one of the 2 kept; with scale-to-zero, an older revision cannot start. Revert the commit too, or the next push to `main` deploys again. |
-| Stop automatic deploys | Disable the `deploy` workflow (Actions → deploy → ⋯ → Disable workflow), or remove the deployer's access: `gcloud iam workload-identity-pools providers update-oidc email-mcp --workload-identity-pool=github --location=global --disabled`. |
+| Stop automatic deploys | Disable the `deploy` workflow (Actions → deploy → ⋯ → Disable workflow), or remove the deployer's access: `gcloud iam workload-identity-pools providers update-oidc github --workload-identity-pool=email-mcp --location=global --disabled`. |
 | Logs | Cloud Logging, service `SERVICE`. They contain no addresses, subjects, bodies, IDs or tokens (D20). |
-| Remove everything | Delete the Cloud Run service, the repository, the four secrets and both service accounts, the provider and pool (`gcloud iam workload-identity-pools providers delete email-mcp --workload-identity-pool=github --location=global`, then `gcloud iam workload-identity-pools delete github --location=global`), and the GitHub environment. The mailbox folders `MCP-Send-Ledger` and `MCP-Auth-State` can be deleted in webmail. |
+| Remove everything | Delete the Cloud Run service, the repository, the four secrets and both service accounts, the provider and pool (`gcloud iam workload-identity-pools providers delete github --workload-identity-pool=email-mcp --location=global`, then `gcloud iam workload-identity-pools delete email-mcp --location=global`), and the GitHub environment. The mailbox folders `MCP-Send-Ledger` and `MCP-Auth-State` can be deleted in webmail. |
 
 `BASE_URL` stays fixed across deploys. `deploy.sh` keeps the value the
 service already has, because changing it invalidates every token and the
@@ -208,7 +212,7 @@ connector. Set `BASE_URL` in `deploy.env` only to move deliberately.
 | The model is talked into destroying mail | Impossible through this server: EXPUNGE, CLOSE, DELETE and STORE `\Deleted` are blocked on the wire; "delete" means moving to Trash. Reading never marks mail as read. Mail cannot be moved into or out of the ledger and auth-state folders, which hold no secrets. |
 | Secret leakage | The secrets live in Secret Manager in your region. The runtime service account can read only those four and has no other role. The scripts refuse secrets in `deploy.env`, pass values only through pipes, and `gen-secrets.sh` writes nothing to disk. A redacting log handler is enforced by tests; the image has no shell. |
 | Supply chain | Go modules pinned in `go.sum` and verified. govulncheck in the gate. Base images pinned by digest; distroless static, nonroot (65532), CGO-free static binary. CI actions are referenced by exact tag rather than commit SHA (your decision, D35). The deploy job runs no third-party action, and gcloud there is pinned by version and SHA-256 (D42). |
-| Someone abuses the deploy pipeline | No stored credential to steal. Google accepts only an OIDC token from this repository (numeric IDs), from `deploy.yml` on `main`, in the `production` environment, on a GitHub-hosted runner. Pull requests and forks never reach the deploy job, and the environment admits only `main`. The deployer has no project role and cannot read secret values or change IAM (D40, D41). |
+| Someone abuses the deploy pipeline | No stored credential to steal. Google accepts only an OIDC token from this repository (numeric IDs), from `deploy.yml` on `main`, in the `production` environment, on a GitHub-hosted runner. The provider is alone in its pool, so no looser provider can map the same repository to the deployer. Pull requests and forks never reach the deploy job, and the environment admits only `main`. The deployer has no project role and cannot read secret values or change IAM (D40, D41). |
 | Cost abuse / DoS | At most 1 instance and request size limits. Per-IP and global rate limits on `/authorize` and `/token` answer 429 before any password hashing. A forged bearer token costs one HMAC check. Budget alert (below). |
 
 **Residual risks** (accepted or open):

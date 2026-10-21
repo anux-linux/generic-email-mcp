@@ -706,6 +706,20 @@ where they are silent, against the gcloud 590.0.0 source and the
 - `roles/iam.workloadIdentityUser` on the deployer is granted to the
   principal set `attribute.repository_id/<ID>`, and the condition narrows
   that further.
+- **The pool is dedicated: `email-mcp`, whose only provider is `github`.**
+  - **Why:** the principal set belongs to the pool, not to one provider. A
+    second GitHub provider in the same pool, with a looser condition (say,
+    owner only), would map this repository's tokens from any branch or
+    workflow to the same principals, and so to the deployer. Our condition
+    would be bypassed.
+  - **Google's best practice:** "use a single provider per workload
+    identity pool", to avoid subject collisions.
+  - **Enforcement:** `gcp-github.sh` lists the pool's providers and refuses
+    if any other exists. If the list itself fails, the script stops rather
+    than skipping the check. A re-run checks again.
+  - **Defaults changed:** the first version defaulted to a generic pool
+    `github` (provider `email-mcp`), which is exactly what an existing
+    project might already have.
 - The deployer has no project role. Each grant is on one resource:
 
   | Role | On | For |
@@ -812,7 +826,8 @@ where they are silent, against the gcloud 590.0.0 source and the
 - `scripts/scripts_test.go` gained 11 tests (28 in all), covering:
   - **`gcp-github.sh`:** the exact condition, mapping and issuer; exactly
     the 8 resource-level grants and no project role; updating an existing
-    provider; refusing deleted pools or providers, a missing service,
+    provider; refusing deleted pools or providers, a pool that holds another
+    provider, a pool whose providers cannot be listed, a missing service,
     missing secrets or missing repository IDs.
   - **`UPDATE_ONLY`:** no listing and no access flag.
   - **Masking:** every personal value and URL is masked before its first

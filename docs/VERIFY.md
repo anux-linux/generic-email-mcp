@@ -117,6 +117,7 @@ here has run against a real project or a real GitHub runner yet.
 | W9 | Omitting the public-access flag keeps the existing setting | **resolved** (gcloud source) | `allow_unauthenticated` "None means to retain the current value"; no `setIamPolicy` call is made. The invoker-check annotation changes only when its flag is given. |
 | W10 | The deployer needs no Secret Manager permission for `--set-secrets` | **resolved** (docs, source) | Cloud Run checks that the service identity can access the secrets; gcloud makes no Secret Manager call. |
 | W11 | The first automatic deploy works end to end | open | After `scripts/gcp-github.sh` and the GitHub environment are set up, merge to `main` and watch the `deploy` run. |
+| W12 | A pool's providers share its principals, so another provider in the pool could bypass our condition | **resolved** (docs), mitigated | Google's best practices: "use a single provider per workload identity pool" to avoid subject collisions. The pool is dedicated by default (`email-mcp`, provider `github`), and `gcp-github.sh` refuses a pool holding any other provider (tested, mutation-checked). |
 
 ## MCP Inspector
 
