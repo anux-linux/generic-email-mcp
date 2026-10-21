@@ -14,6 +14,18 @@ say() { printf '==> %s\n' "$*" >&2; }
 in_list() { local x=$1 e; shift; for e in "$@"; do [[ $e == "$x" ]] && return 0; done; return 1; }
 need() { local c; for c in "$@"; do command -v "$c" >/dev/null 2>&1 || die "$c is required"; done; }
 
+# pick_container_cli: sets CTR to the container engine: $CONTAINER_CLI if set,
+# else docker, else podman. The buildx-only flags are docker's alone.
+pick_container_cli() {
+	CTR=${CONTAINER_CLI:-}
+	if [[ -z $CTR ]]; then
+		if command -v docker >/dev/null 2>&1; then CTR=docker; else CTR=podman; fi
+	fi
+	CTR_BUILD_FLAGS=()
+	[[ $(basename "$CTR") == podman ]] || CTR_BUILD_FLAGS=(--provenance=false --sbom=false)
+	need "$CTR"
+}
+
 # Deployment settings, not passed to the service. The CD_*, WIF_* and
 # DEPLOY_SA_NAME keys are only for scripts/gcp-github.sh.
 DEPLOY_KEYS=(PROJECT_ID REGION SERVICE REPOSITORY RUNTIME_SA_NAME PUBLIC_ACCESS

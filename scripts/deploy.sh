@@ -18,6 +18,10 @@
 # and leaves its public access as it is. The deploying identity then needs
 # rights on this one service only, not on the project (scripts/gcp-github.sh).
 #
+# Container engine: docker if installed, else podman; override with
+# CONTAINER_CLI=podman. Podman reads the registry login that
+# gcloud auth configure-docker writes (needs docker-credential-gcloud on PATH).
+#
 # Prerequisites: scripts/gcp-bootstrap.sh, scripts/gcp-registry.sh,
 # scripts/gcp-secrets.sh all, and
 # gcloud auth configure-docker <REGION>-docker.pkg.dev
@@ -25,7 +29,8 @@ set -euo pipefail
 # shellcheck source=lib/gcp.sh
 . "$(dirname "$0")/lib/gcp.sh"
 load_config
-need gcloud docker git curl jq
+need gcloud git curl jq
+pick_container_cli
 
 # --- what to deploy -------------------------------------------------------------
 tag=$(git -C "$ROOT" rev-parse --short=12 HEAD)
@@ -93,9 +98,9 @@ if [[ -n $digest ]]; then
 else
 	# Single-platform manifest without attestations: one registry version
 	# per deploy, which the keep-2 cleanup policy counts as expected.
-	docker build --platform linux/amd64 --provenance=false --sbom=false \
+	"$CTR" build --platform linux/amd64 ${CTR_BUILD_FLAGS[@]+"${CTR_BUILD_FLAGS[@]}"} \
 		--build-arg VERSION="$tag" -t "$IMAGE:$tag" "$ROOT"
-	docker push "$IMAGE:$tag"
+	"$CTR" push "$IMAGE:$tag"
 	digest=$(digest_of "$IMAGE:$tag")
 fi
 [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || die "could not resolve the digest of $IMAGE:$tag"
