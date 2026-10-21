@@ -38,7 +38,7 @@ const (
 // Config is the complete service configuration.
 type Config struct {
 	Port             string
-	BaseURL          string // empty: setup mode (only /healthz)
+	BaseURL          string // empty: setup mode (only /health)
 	LogLevel         slog.Level
 	TrustedProxyHops int
 

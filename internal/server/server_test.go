@@ -248,14 +248,14 @@ func TestEndToEndOAuthAndMCP(t *testing.T) {
 
 func TestSecurityHeadersAndHealth(t *testing.T) {
 	ts := start(t)
-	resp, err := http.Get(ts.URL + "/healthz")
+	resp, err := http.Get(ts.URL + "/health")
 	if err != nil {
 		t.Fatal(err)
 	}
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != 200 || string(body) != "ok\n" {
-		t.Fatalf("healthz: %d %q", resp.StatusCode, body)
+		t.Fatalf("health: %d %q", resp.StatusCode, body)
 	}
 	for k, v := range map[string]string{
 		"X-Content-Type-Options":  "nosniff",
@@ -287,9 +287,20 @@ func TestHSTSOnlyForHTTPS(t *testing.T) {
 	}
 }
 
+// Cloud Run answers paths starting with /_ah/ and some paths ending in "z"
+// (such as /healthz) itself; a route there would never be reached.
+func TestNoCloudRunReservedPaths(t *testing.T) {
+	for _, p := range []string{PathHealth, PathMCP, oauth.PathAuthorize, oauth.PathToken,
+		oauth.PathResourceMetadata, oauth.PathResourceMetadata + PathMCP, oauth.PathASMetadata} {
+		if strings.HasSuffix(p, "z") || strings.HasPrefix(p, "/_ah/") {
+			t.Errorf("%s is reserved on Cloud Run", p)
+		}
+	}
+}
+
 func TestSetupMode(t *testing.T) {
 	h := Handler(Deps{})
-	for path, want := range map[string]int{"/healthz": 200, "/mcp": 503, "/authorize": 503, "/token": 503, "/.well-known/oauth-protected-resource": 503} {
+	for path, want := range map[string]int{"/health": 200, "/mcp": 503, "/authorize": 503, "/token": 503, "/.well-known/oauth-protected-resource": 503} {
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
 		if w.Code != want {

@@ -136,9 +136,11 @@ No test or check here contacts Google Cloud.
 
 | Requirement | Tests |
 |---|---|
-| Multi-stage Dockerfile, CGO off, `-trimpath`, distroless nonroot | `scripts/image-check.sh` I1–I12: version stamped, user 65532:65532, linux/amd64, no shell, exactly one layer on the pinned base, setup mode (`/healthz` 200, `/mcp` 503), full mode (metadata, 401), SIGTERM → exit 0 before the kill timeout, JSON logs without secrets. Runs in CI (`image` job). |
+| Multi-stage Dockerfile, CGO off, `-trimpath`, distroless nonroot | `scripts/image-check.sh` I1–I12: version stamped, user 65532:65532, linux/amd64, no shell, exactly one layer on the pinned base, setup mode (`/health` 200, `/mcp` 503), full mode (metadata, 401), SIGTERM → exit 0 before the kill timeout, JSON logs without secrets. Runs in CI (`image` job). |
 | Two-step first deploy, then `BASE_URL` | `scripts.TestDeployFirstTimeIsTwoStep`, `…FinishesSetupMode`, `…KeepsExistingBaseURL` (no URL flip on later deploys), `…LaterIsOneStepAndReusesImage`, `…BaseURLOverride` |
 | Cloud Run flags (`--allow-unauthenticated`, min 0, max 1, 1 CPU, 256 Mi, timeout 60) and secrets from Secret Manager | `checkDeployCall` in every deploy test asserts each flag, the image by digest, the four pinned secret versions and the exact environment. Also `scripts.TestDeployWithoutAllUsers`, `…NeedsSecretVersions`. |
+| Health endpoint reachable on Cloud Run | `server.TestNoCloudRunReservedPaths` (no route ends in `z` or starts with `/_ah/`; VERIFY H13), `scripts.TestDeployReportsHealthStatus` (a non-200 health answer is reported with its code, without retrying) |
+| Podman as the container engine | `scripts.TestDeployWithPodman` |
 | Deploy safety | `scripts.TestDeployAsksWithoutYes`, `…VerifiesTheResource` (wrong `BASE_URL` detected after deploy), `scripts.TestConfigValidation` (secrets, unknown keys and shell code in `deploy.env` refused, with no external call made) |
 | `gen-secrets.sh` prints once and writes nothing | `scripts.TestGenSecrets`: refuses a non-terminal stdout; on a pseudo-terminal it prints a 32-byte key, a valid client ID and a 32-byte secret, all different on every run |
 | Secret Manager scripts | `scripts.TestSecretsGoThroughStdinOnly` (value only on gcloud's stdin, never in argv; regional replication; per-secret accessor binding), `…ValidateBeforeStoring`, `…StoresPasswordHashNotPassword` |
@@ -155,7 +157,7 @@ No test or check here contacts Google Cloud or GitHub's OIDC service.
 |---|---|
 | Keyless trust limited to this repository, `deploy.yml`, `main`, `production` and GitHub-hosted runners | `scripts.TestGitHubSetup` (exact attribute condition, mapping, issuer, principal set by repository ID), `…UpdatesProvider` (a re-run updates the condition in place) |
 | Deployer has least privilege | `scripts.TestGitHubSetup`: exactly 8 grants, each on one resource (service, runtime account, repository, four secrets), and no project role |
-| Setup refuses unsafe or incomplete states | `scripts.TestGitHubSetupRefuses`: no service yet, missing secrets, no repository IDs, deleted pool or provider. In each case no provider or binding is changed |
+| Setup refuses unsafe or incomplete states | `scripts.TestGitHubSetupRefuses`: no service yet, missing secrets, no repository IDs, deleted pool or provider, a pool shared with another provider, a pool whose providers cannot be listed. In each case no provider or binding is changed |
 | CI only updates and never changes public access | `scripts.TestDeployUpdateOnly`, `…UpdateOnlyNeedsService` |
 | Nothing personal in the public log | `scripts.TestDeployMasksPersonalValuesInGitHubActions` (address, client ID, allowlist and its entries, service URLs are masked before their first use), `…DoesNotMaskOutsideGitHubActions` |
 | Credentials handled safely in the job | `scripts.TestCIDeploy`: exact external-account file, mode 0600, request token never in argv, sign-in before any other gcloud call, work directory removed, `UPDATE_ONLY` deploy |

@@ -5,7 +5,7 @@
 #   YES=1 scripts/deploy.sh    # no question
 #
 # The first deploy is two-step: deploy without BASE_URL (setup mode: only
-# /healthz) to learn the service URL, then redeploy with BASE_URL set to it.
+# /health) to learn the service URL, then redeploy with BASE_URL set to it.
 # The deterministic URL (https://SERVICE-PROJECT_NUMBER.REGION.run.app) is
 # preferred when the service has one. Later deploys take one step and keep
 # the BASE_URL the service already has: changing it would invalidate every
@@ -146,12 +146,14 @@ fi
 deploy "$url"
 
 # --- verify ------------------------------------------------------------------------
-ok=""
+# Retry only while the service may still be starting (no connection, or a
+# 5xx); any other answer is final.
 for _ in $(seq 30); do
-	curl -fsS --max-time 10 "$url/healthz" >/dev/null 2>&1 && { ok=1; break; }
+	code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "$url/health" 2>/dev/null) || code=000
+	[[ $code == 000 || $code == 5* ]] || break
 	sleep 2
 done
-[[ -n $ok ]] || die "$url/healthz did not answer"
+[[ $code == 200 ]] || die "GET $url/health answered $code, want 200"
 curl -fsS --max-time 10 "$url/.well-known/oauth-protected-resource/mcp" |
 	jq -e --arg r "$url/mcp" '.resource == $r' >/dev/null ||
 	die "the protected resource metadata does not name $url/mcp; is BASE_URL right?"

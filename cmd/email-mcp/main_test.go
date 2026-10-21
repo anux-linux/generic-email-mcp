@@ -82,9 +82,9 @@ func TestServeAndGracefulShutdown(t *testing.T) {
 		done := make(chan int, 1)
 		go func() { done <- serve(ctx, ln, server.NewHTTPServer(ln.Addr().String(), h, logger), cfg, logger) }()
 
-		resp, err := http.Get("http://" + ln.Addr().String() + "/healthz")
+		resp, err := http.Get("http://" + ln.Addr().String() + "/health")
 		if err != nil || resp.StatusCode != 200 {
-			t.Fatalf("healthz: %v", err)
+			t.Fatalf("health: %v", err)
 		}
 		resp.Body.Close()
 		cancel()

@@ -56,6 +56,7 @@ const fakeGcloud = fakePrelude + `case $args in
 *" artifacts docker images describe "*) [[ -f $S/pushed ]] && echo "$FAKE_DIGEST" || exit 1 ;;
 *" projects describe "*) echo 123456789012 ;;
 *" workload-identity-pools providers describe "*) [[ -f $S/provider ]] && cat "$S/provider" || exit 1 ;;
+*" workload-identity-pools providers list "*) [[ -f $S/nolist ]] && exit 1; [[ -f $S/providers ]] && cat "$S/providers" ;;
 *" workload-identity-pools describe "*) [[ -f $S/pool ]] && cat "$S/pool" || exit 1 ;;
 *" auth login "*) for a in "$@"; do [[ $a == --cred-file=* ]] && cp -p "${a#--cred-file=}" "$S/credentials.json"; done ;;
 *" artifacts repositories describe "*) exit 1 ;;
@@ -75,11 +76,13 @@ exit 0
 // A download (-o FILE) never delivers the pinned gcloud tarball.
 const fakeCurl = fakePrelude + `url=${!#}
 case $args in
-*" -w "*) printf 401 ;;
+*" -w "*) case $url in
+	*/health) [[ -f $S/unhealthy ]] && printf 404 || printf 200 ;;
+	*) printf 401 ;;
+	esac ;;
 *" -o "*) prev=""
 	for a in "$@"; do [[ $prev == -o ]] && echo "not the pinned tarball" > "$a"; prev=$a; done ;;
 *) case $url in
-	*/healthz) echo ok ;;
 	*/.well-known/oauth-protected-resource/mcp) printf '{"resource":"%s/mcp"}' "${FAKE_RESOURCE_BASE:-${url%%/.well-known/*}}" ;;
 	*) exit 22 ;;
 	esac ;;
@@ -111,7 +114,7 @@ func newSandbox(t *testing.T, config string) *sandbox {
 			t.Fatal(err)
 		}
 	}
-	for name, src := range map[string]string{"gcloud": fakeGcloud, "docker": fakeDocker, "curl": fakeCurl} {
+	for name, src := range map[string]string{"gcloud": fakeGcloud, "docker": fakeDocker, "podman": fakeDocker, "curl": fakeCurl} {
 		if err := os.WriteFile(filepath.Join(bin, name), []byte(src), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -404,6 +407,47 @@ func TestDeployVerifiesTheResource(t *testing.T) {
 	}
 }
 
+// A non-5xx answer from /health is final: reported at once, not retried
+// for a minute.
+func TestDeployReportsHealthStatus(t *testing.T) {
+	s := newSandbox(t, baseConfig)
+	s.mark("service")
+	s.markValue("baseurl", fakeURL)
+	s.mark("unhealthy")
+	out, err := s.run("", "deploy.sh")
+	if err == nil || !strings.Contains(out, "GET "+fakeURL+"/health answered 404, want 200") {
+		t.Fatalf("health failure not reported: %v\n%s", err, out)
+	}
+	if n := len(s.calls("curl", fakeURL+"/health")); n != 1 {
+		t.Errorf("%d health requests, want 1", n)
+	}
+}
+
+// With CONTAINER_CLI=podman the image is built and pushed by podman,
+// without docker's buildx-only flags.
+func TestDeployWithPodman(t *testing.T) {
+	s := newSandbox(t, baseConfig)
+	s.mark("service")
+	s.markValue("baseurl", fakeURL)
+	s.env = append(s.env, "CONTAINER_CLI=podman")
+	if out, err := s.run("", "deploy.sh"); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+	builds := s.calls("podman", "build")
+	if len(builds) != 1 || !containsAll(builds[0], "--platform", "linux/amd64", s.root) ||
+		slices.Contains(builds[0], "--provenance=false") || slices.Contains(builds[0], "--sbom=false") {
+		t.Fatalf("podman build = %q", builds)
+	}
+	if len(s.calls("podman", "push")) != 1 || len(s.calls("docker")) != 0 {
+		t.Errorf("push via podman only: podman %q, docker %q", s.calls("podman", "push"), s.calls("docker"))
+	}
+	deploys := s.calls("gcloud", "run", "deploy")
+	if len(deploys) != 1 {
+		t.Fatalf("%d deploy calls, want 1", len(deploys))
+	}
+	checkDeployCall(t, deploys[0], fakeURL)
+}
+
 func TestDeployNeedsSecretVersions(t *testing.T) {
 	s := newSandbox(t, baseConfig)
 	s.mark("nosecrets")
@@ -633,7 +677,7 @@ func TestGenSecrets(t *testing.T) {
 
 const (
 	cdConfig    = baseConfig + "CD_REPO=anux-linux/generic-email-mcp\nCD_REPO_ID=1427120410\nCD_OWNER_ID=838468\n"
-	wifProvider = "projects/123456789012/locations/global/workloadIdentityPools/github/providers/email-mcp"
+	wifProvider = "projects/123456789012/locations/global/workloadIdentityPools/email-mcp/providers/github"
 	deploySA    = "email-mcp-deploy@test-project-1.iam.gserviceaccount.com"
 	wantCond    = "assertion.repository_id == '1427120410' && assertion.repository_owner_id == '838468'" +
 		" && assertion.ref == 'refs/heads/main' && assertion.environment == 'production'" +
@@ -668,11 +712,11 @@ func TestGitHubSetup(t *testing.T) {
 		"iamcredentials.googleapis.com", "sts.googleapis.com")) != 1 {
 		t.Error("APIs not enabled")
 	}
-	if len(s.calls("gcloud", "iam", "workload-identity-pools", "create", "github", "--location=global")) != 1 {
+	if len(s.calls("gcloud", "iam", "workload-identity-pools", "create", "email-mcp", "--location=global")) != 1 {
 		t.Error("pool not created")
 	}
-	creates := s.calls("gcloud", "workload-identity-pools", "providers", "create-oidc", "email-mcp",
-		"--workload-identity-pool=github", "--location=global", "--issuer-uri=https://token.actions.githubusercontent.com",
+	creates := s.calls("gcloud", "workload-identity-pools", "providers", "create-oidc", "github",
+		"--workload-identity-pool=email-mcp", "--location=global", "--issuer-uri=https://token.actions.githubusercontent.com",
 		"--attribute-mapping=google.subject=assertion.sub,attribute.repository_id=assertion.repository_id")
 	if len(creates) != 1 {
 		t.Fatalf("provider create calls = %q", s.calls("gcloud", "providers"))
@@ -688,7 +732,7 @@ func TestGitHubSetup(t *testing.T) {
 	member := "serviceAccount:" + deploySA
 	want := []string{
 		"artifacts repositories email-mcp " + member + " roles/artifactregistry.writer",
-		"iam service-accounts " + deploySA + " principalSet://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/github/attribute.repository_id/1427120410 roles/iam.workloadIdentityUser",
+		"iam service-accounts " + deploySA + " principalSet://iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/email-mcp/attribute.repository_id/1427120410 roles/iam.workloadIdentityUser",
 		"iam service-accounts email-mcp-run@test-project-1.iam.gserviceaccount.com " + member + " roles/iam.serviceAccountUser",
 		"run services email-mcp " + member + " roles/run.developer",
 	}
@@ -717,13 +761,15 @@ func TestGitHubSetupUpdatesProvider(t *testing.T) {
 	s.mark("secrets")
 	s.markValue("pool", "ACTIVE")
 	s.markValue("provider", "ACTIVE")
+	s.markValue("providers", "github\n")
 	if out, err := s.run("", "gcp-github.sh"); err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
 	if n := len(s.calls("gcloud", "create")) + len(s.calls("gcloud", "create-oidc")); n != 1 { // the service account
 		t.Errorf("%d create calls, want 1: %q", n, s.calls("gcloud"))
 	}
-	updates := s.calls("gcloud", "providers", "update-oidc", "email-mcp", "--issuer-uri=https://token.actions.githubusercontent.com")
+	updates := s.calls("gcloud", "providers", "update-oidc", "github", "--workload-identity-pool=email-mcp",
+		"--issuer-uri=https://token.actions.githubusercontent.com")
 	if len(updates) != 1 {
 		t.Fatalf("update-oidc calls = %q", updates)
 	}
@@ -741,8 +787,14 @@ func TestGitHubSetupRefuses(t *testing.T) {
 		"no service":       {cdConfig, map[string]string{"secrets": ""}, "deploy it once with scripts/deploy.sh"},
 		"no secrets":       {cdConfig, map[string]string{"service": ""}, "run scripts/gcp-secrets.sh MAIL_PASSWORD"},
 		"no repository":    {baseConfig, map[string]string{"service": "", "secrets": ""}, "set CD_REPO, CD_REPO_ID and CD_OWNER_ID"},
-		"deleted provider": {cdConfig, map[string]string{"service": "", "secrets": "", "pool": "ACTIVE", "provider": "DELETED"}, "providers undelete email-mcp"},
-		"deleted pool":     {cdConfig, map[string]string{"service": "", "secrets": "", "pool": "DELETED"}, "workload-identity-pools undelete github"},
+		"deleted provider": {cdConfig, map[string]string{"service": "", "secrets": "", "pool": "ACTIVE", "provider": "DELETED"}, "providers undelete github"},
+		"deleted pool":     {cdConfig, map[string]string{"service": "", "secrets": "", "pool": "DELETED"}, "workload-identity-pools undelete email-mcp"},
+		// Another provider in the pool would map tokens of this repository
+		// to the same principals, bypassing our condition.
+		"shared pool": {cdConfig, map[string]string{"service": "", "secrets": "", "pool": "ACTIVE", "provider": "ACTIVE",
+			"providers": "github\nother-ci\n"}, "also holds the provider(s) other-ci"},
+		"unlistable pool": {cdConfig, map[string]string{"service": "", "secrets": "", "pool": "ACTIVE", "nolist": ""},
+			"cannot list the providers of pool email-mcp"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			s := newSandbox(t, tc.config)
