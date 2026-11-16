@@ -32,7 +32,7 @@ free tier. There is no web UI: one mailbox, one owner, one OAuth client
 - the gcloud CLI (validated with 570.0.0 and 590.0.0);
 - Docker with BuildKit (Docker ≥ 23), or Podman with `CONTAINER_CLI=podman`
   (`deploy.sh` uses docker when it is installed, otherwise podman);
-- Go 1.27.3, only for hashing the owner password;
+- Go 1.27.4, only for hashing the owner password;
 - git, curl, jq and bash (3.2 or later; macOS's default works).
 
 All scripts read `deploy.env`, show what they will change and ask first.
@@ -397,7 +397,7 @@ optionally `WIF_POOL`, `WIF_PROVIDER`, `DEPLOY_SA_NAME`; see
 
 ## Development
 
-Go 1.27.3 (`GOTOOLCHAIN=auto` downloads it). No test touches a real mailbox
+Go 1.27.4 (`GOTOOLCHAIN=auto` downloads it). No test touches a real mailbox
 or a cloud account.
 
 ```sh

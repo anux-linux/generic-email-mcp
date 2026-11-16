@@ -1,6 +1,6 @@
 module github.com/anux-linux/generic-email-mcp
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/emersion/go-imap/v2 v2.0.0-beta.8
@@ -9,7 +9,7 @@ require (
 	github.com/google/jsonschema-go v0.4.3
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	golang.org/x/crypto v0.58.0
-	golang.org/x/net v0.61.0
+	golang.org/x/net v0.62.0
 	golang.org/x/text v0.43.0
 	golang.org/x/time v0.16.0
 )
