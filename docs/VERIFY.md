@@ -147,7 +147,7 @@ here has run against a real project or a real GitHub runner yet.
 |---|---|---|
 | V1 | govulncheck module-level finding GO-2026-5932 (`golang.org/x/crypto/openpgp` unmaintained) | **resolved** — the package is not imported (symbol and package scans clean); no fixed version exists |
 | V2 | CI action tags `actions/checkout@v7.0.1`, `actions/setup-go@v7.0.0` point at the intended code | open, accepted | Tags are mutable (D35); resolved via `git ls-remote` on 2026-10-20. |
-| V3 | Base image digests (`golang:1.27.3-trixie`, `distroless/static-debian13:nonroot`) are current | **resolved** 2026-10-20 | Resolved with `docker buildx imagetools inspect`; refresh periodically for security updates and re-run `scripts/image-check.sh`. |
+| V3 | Base image digests (`golang:1.27.4-trixie`, `distroless/static-debian13:nonroot`) are current | **resolved** 2026-11-16 | Both were re-resolved when Go moved to 1.27.4 (D49). The golang digest was checked against both the registry API and the Docker Hub API; both indexes include linux/amd64. Refresh periodically for security updates and re-run `scripts/image-check.sh`. |
 
 ## Policy
 

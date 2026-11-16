@@ -2,6 +2,7 @@ package logging
 
 import (
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -16,6 +17,9 @@ func FuzzScrub(f *testing.F) {
 	f.Add("mail bob@example.net with Bearer abc and eyJhbGciOi.eyJzdWIiOi.sig")
 	f.Add("a@b.co,c@d.org")
 	f.Add("bob@localhost and 0@0..")
+	// Invalid UTF-8 between the parts of an address, in a string long
+	// enough to be truncated (the 2026-11-16 weekly-run finding).
+	f.Add("user@\xf5example.org " + strings.Repeat("x ", 300))
 	f.Fuzz(func(t *testing.T, s string) {
 		out := Scrub(s)
 		if emailRE.MatchString(out) || jwtRE.MatchString(out) {

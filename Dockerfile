@@ -6,7 +6,7 @@
 # together (docs/DECISIONS.md D36). The build stage runs on the build host's
 # platform and cross-compiles, so building on arm64 needs no emulation.
 
-FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.27.3-trixie@sha256:1896654cfc5c2b5ad74c07f29cb36f5d2d1cbed42e3054070fbfe444e521e83c AS build
+FROM --platform=$BUILDPLATFORM docker.io/library/golang:1.27.4-trixie@sha256:f18c3d73a184fb0582828510722e723b63a93f7188d11dd223d9be6f6880e65d AS build
 ARG TARGETOS TARGETARCH
 ARG VERSION=dev
 WORKDIR /src
@@ -22,7 +22,7 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
 	GOOS=$TARGETOS GOARCH=$TARGETARCH \
 	go build -trimpath -buildvcs=false -ldflags="-X main.version=${VERSION}" -o /out/email-mcp ./cmd/email-mcp
 
-FROM gcr.io/distroless/static-debian13:nonroot@sha256:516757106de35205efb70b91ba03f6f1298424a0678c603255cf2852a7000087
+FROM gcr.io/distroless/static-debian13:nonroot@sha256:aafe993665bf6200db38a02c11a9351e782a84b6a45e7f33b6695638c88e3931
 COPY --from=build /out/email-mcp /email-mcp
 # nonroot (65532:65532), numeric so runtimes can verify it is not root.
 USER 65532:65532

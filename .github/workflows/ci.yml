@@ -68,7 +68,9 @@ jobs:
       - uses: actions/setup-go@v7.0.0
         with:
           go-version-file: go.mod
-      - run: FUZZTIME=60s SKIP_VULN=1 scripts/check.sh
+      # Includes govulncheck: new vulnerabilities are published without any
+      # change here, so the weekly run checks for them too (D49).
+      - run: FUZZTIME=60s scripts/check.sh
       - name: Show new crashers
         if: failure()
         run: git status --porcelain -- '**/testdata/fuzz/**' | cut -c4- | xargs -r -I{} sh -c 'echo "== {}"; cat "{}"'

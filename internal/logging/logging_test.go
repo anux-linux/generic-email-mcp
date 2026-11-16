@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 type secretStruct struct{ Body string }
@@ -98,6 +99,32 @@ func TestScrubCapsLength(t *testing.T) {
 	s := Scrub(strings.Repeat("ab ", 1000))
 	if len(s) > 520 {
 		t.Fatalf("len = %d", len(s))
+	}
+}
+
+// Invalid UTF-8 inside an address must not hide it from the scrubber and
+// then vanish: found by the weekly fuzz run (FuzzScrub, 2026-11-16).
+func TestScrubInvalidUTF8CannotJoinAnAddress(t *testing.T) {
+	for _, in := range []string{
+		"contact: user@\xf5example.org " + strings.Repeat("x ", 300), // long: truncated
+		"contact: user@\xf5example.org",                              // short
+		"token eyJhbGciOi\xffJ9.eyJzdWIiOi.sig " + strings.Repeat("x ", 300),
+	} {
+		out := Scrub(in)
+		if strings.Contains(out, "user@example.org") || strings.Contains(out, "eyJhbGciOiJ9.eyJzdWIiOi.") {
+			t.Errorf("Scrub(%q) = %q", in[:40], out)
+		}
+		if !utf8.ValidString(out) || len(out) > 520 {
+			t.Errorf("Scrub(%q): valid UTF-8 %v, len %d", in[:40], utf8.ValidString(out), len(out))
+		}
+	}
+}
+
+// Truncation cuts at a rune boundary rather than dropping bytes.
+func TestScrubTruncatesAtRuneBoundary(t *testing.T) {
+	out := Scrub(strings.Repeat("ä ", 400))
+	if !utf8.ValidString(out) || !strings.HasSuffix(out, "…") || len(out) > 515 {
+		t.Fatalf("len %d, valid %v, suffix %q", len(out), utf8.ValidString(out), out[len(out)-6:])
 	}
 }
 

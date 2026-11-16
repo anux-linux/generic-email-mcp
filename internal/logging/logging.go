@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 // Redacted replaces values of attributes whose key is not allowlisted.
@@ -146,12 +147,21 @@ var scrubbers = []struct {
 // Scrub removes credentials, addresses and long opaque strings (tokens,
 // draft IDs, keys) from s and caps its length.
 func Scrub(s string) string {
+	// Replace invalid UTF-8 before matching, never remove it afterwards:
+	// dropping a byte would join the text around it, and "user@\xf5example.org"
+	// would become an address the patterns had not seen.
+	s = strings.ToValidUTF8(s, "\uFFFD")
 	for _, sc := range scrubbers {
 		s = sc.re.ReplaceAllString(s, sc.repl)
 	}
 	const maxLen = 512
 	if len(s) > maxLen {
-		s = strings.ToValidUTF8(s[:maxLen], "") + "…"
+		// Cut at a rune boundary; s is valid UTF-8 here.
+		cut := maxLen
+		for !utf8.RuneStart(s[cut]) {
+			cut--
+		}
+		s = s[:cut] + "…"
 	}
 	return s
 }

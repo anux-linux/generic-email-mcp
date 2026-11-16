@@ -7,6 +7,7 @@ Each entry: the choice, and why. Newest phase last. Open questions live in
 
 ### D1. Toolchain and dependencies
 - Go **1.27.3** (latest stable on 2026-10-20), set in `go.mod` (`go 1.27.3`).
+  Updated to 1.27.4 on 2026-11-16 for a security fix (D49).
 - Runtime dependencies, all exact versions in `go.mod`/`go.sum`:
 
   | Module | Version | Used for |
@@ -893,4 +894,49 @@ where they are silent, against the gcloud 590.0.0 source and the
   6, and a second connector to manage. Automatic deploys cover only the
   first mailbox. Extending `deploy.yml` would need a second environment,
   `DEPLOY_ENV` and provider condition.
+
+
+### D48. Log scrubbing replaces invalid UTF-8 first (weekly fuzz finding)
+- The weekly fuzz run on 2026-11-16 found an input where `Scrub` let an
+  address through. Invalid UTF-8 was removed only when a long value was
+  truncated, after the address pattern had run. `user@\xf5example.org`
+  did not match, and removing `\xf5` then joined it into
+  `user@example.org`.
+- `Scrub` now replaces invalid UTF-8 with U+FFFD before any pattern runs,
+  and truncates at a rune boundary instead of dropping bytes. Nothing can
+  be joined after matching.
+- Impact was nil in practice. Messages and the allowlisted keys carry
+  fixed values, or values the caller sent itself (`grant_type`). Owner
+  data never reaches `Scrub`, because other keys are replaced with
+  `[redacted]`. Scrubbing is the second layer, and it now holds its
+  invariant.
+- Tests: `TestScrubInvalidUTF8CannotJoinAnAddress` fails on the old code;
+  `TestScrubTruncatesAtRuneBoundary` checks the new cut. The minimized
+  input is a `FuzzScrub` seed. About 960,000 further executions in 3
+  minutes found nothing.
+
+### D49. Security update 2026-11-16, and govulncheck in the weekly run
+- govulncheck reported two vulnerabilities this code reaches, both
+  published after the last push on 2026-10-21:
+  - **GO-2026-6859:** an HTTP/1 server crash due to a `MaxBytesReader`
+    header race in `net/http`. The server limits request bodies with
+    `http.MaxBytesReader`, so a remote client could probably crash the
+    instance. Fixed in Go 1.27.4.
+  - **GO-2026-6860:** quadratic complexity when coalescing text nodes in
+    `golang.org/x/net/html`. HTML mail bodies are parsed with it, so a
+    crafted mail could make `mail_read` CPU-bound until the 45 s tool
+    timeout. Fixed in `x/net` v0.62.0.
+- Changes:
+  - **Go 1.27.4:** set in `go.mod` and `tools/go.mod`; CI follows through
+    `go-version-file`.
+  - **`golang.org/x/net` v0.62.0:** no other module changed.
+  - **Both base images re-pinned:** `golang:1.27.4-trixie`, and distroless
+    `static-debian13:nonroot`, whose tag had moved on (VERIFY V3).
+- **Why it went unnoticed:** no push happened in the meantime, and the
+  weekly run skipped govulncheck (`SKIP_VULN=1`). Vulnerability data
+  changes without any code change, so the weekly run now includes
+  govulncheck. A new advisory then turns the scheduled run red within a
+  week.
+- **Rollout:** this takes effect only after a deploy, so redeploy after
+  merging, with `scripts/deploy.sh` or the deploy workflow.
 
